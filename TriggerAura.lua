@@ -48,10 +48,15 @@ local function cmp(op, a, b)
 end
 
 -- Stops at the first nil slot: the aura list is a compacting array on this
--- client. Memoized per unit|filter for the tick.
+-- client. Memoized per unit and filter for the tick -- two levels rather than
+-- a concatenated key, since this lookup runs per entry per filter per trigger.
 local function scanUnit(unit, filter)
-	local key = unit .. "|" .. filter
-	local list = memo[key]
+	local byFilter = memo[unit]
+	if not byFilter then
+		byFilter = {}
+		memo[unit] = byFilter
+	end
+	local list = byFilter[filter]
 	if list then return list end
 	list = {}
 	for i = 1, MAX_SLOT do
@@ -59,7 +64,7 @@ local function scanUnit(unit, filter)
 		if not aura then break end
 		list[i] = aura
 	end
-	memo[key] = list
+	byFilter[filter] = list
 	return list
 end
 
@@ -600,6 +605,16 @@ local function findMatch(ti, unit)
 	return best
 end
 
+-- The field writer below, shared through upvalues rather than a closure per
+-- call: this runs per trigger per 0.2s tick whether or not anything changed.
+-- Safe because nothing between the assignments and the last set() call can
+-- re-enter updateTriggerInfoState -- every call in that window is an engine
+-- read (Unit*, GetSpellInfo), never user code.
+local curState, curChanged
+local function set(k, v)
+	if curState[k] ~= v then curState[k] = v; curChanged = true end
+end
+
 -- Writes one state of ti with field-by-field change detection: the base `""`
 -- state for a single token, or `cloneId`'s for one member of a multi-unit
 -- family. `match` is the matched { aura, index, filter } (or nil). Returns true
@@ -641,26 +656,24 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 
 	if not state then state = {}; states[cloneId] = state end
 	local now = GetTime()
-	local changed = false
-	local function set(k, v)
-		if state[k] ~= v then state[k] = v; changed = true end
-	end
+	curState = state
+	curChanged = false
 
 	-- Timestamp trio, computed before the fields they compare against get
 	-- overwritten (§5: refresh = expirationTime jumped > 0.2s).
 	if not state.show then
 		state.initialTime = now
 		state.refreshTime = now
-		changed = true
+		curChanged = true
 	elseif matched and state.expirationTime and aura.expirationTime
 		and (aura.expirationTime - state.expirationTime > 0.2) then
 		state.refreshTime = now
-		changed = true
+		curChanged = true
 	end
 	if matched then
 		local newStacks = aura.applications or 0
-		if state.stacks and newStacks > state.stacks then state.stackGainTime = now; changed = true
-		elseif state.stacks and newStacks < state.stacks then state.stackLostTime = now; changed = true end
+		if state.stacks and newStacks > state.stacks then state.stackGainTime = now; curChanged = true
+		elseif state.stacks and newStacks < state.stacks then state.stackLostTime = now; curChanged = true end
 	end
 
 	set("show", true)
@@ -709,8 +722,8 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 		set("overflow", false)
 	end
 
-	if changed then state.changed = true end
-	return changed
+	if curChanged then state.changed = true end
+	return curChanged
 end
 
 -- One scan of a multi-unit ti: a GUID-keyed clone per current member, and every
@@ -814,7 +827,10 @@ local function scanMultiGuid(ti)
 	return dirty
 end
 
+local lastScan
 local function scanTick()
+	WA.ProfBegin("aura scan")
+	lastScan = GetTime()
 	WA.wipe(memo)
 	WA.wipe(gateMemo)
 	local dirty = {}
@@ -835,6 +851,7 @@ local function scanTick()
 		end
 	end
 	for id in pairs(dirty) do WA.UpdatedTriggerState(id) end
+	WA.ProfEnd("aura scan")
 end
 TriggerAura.scanTick = scanTick
 -- Debug/test accessor: the harness drives a scan without the 0.2s ticker.
@@ -851,4 +868,11 @@ TriggerAura.ticker = C_Timer.NewTicker(0.2, scanTick)
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("UNIT_AURA")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-eventFrame:SetScript("OnEvent", function() scanTick() end)
+-- Coalesced to one scan per frame: GetTime is frame-locked on this client, so
+-- an equal stamp means a scan already ran this frame -- and raid combat
+-- delivers UNIT_AURA in same-frame bursts that were each a full rescan. Only
+-- the nudge dedupes; a direct scanTick call (LoadDisplays' synchronous
+-- re-derive) always runs.
+eventFrame:SetScript("OnEvent", function()
+	if lastScan ~= GetTime() then scanTick() end
+end)

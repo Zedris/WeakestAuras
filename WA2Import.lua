@@ -551,6 +551,19 @@ local function translateConditionCheck(source, templates, report, label, types)
 	if not template then
 		return nil, "unknown variable " .. tostring(source.variable) .. " for trigger " .. tostring(trigger)
 	end
+	-- A custom check's `value` is Lua that will run and its `op` the event list
+	-- that runs it, so unlike every other check it has to clear the same syntax
+	-- bar a condition's custom-code *change* does. Source that will not compile
+	-- drops the check rather than importing a condition that can only be false.
+	if trigger == -1 and variable == "customcheck" then
+		-- No code at all is a row the author added and never filled in, which
+		-- upstream generates no test for -- the same reading the trigger/variable
+		-- guard above gives an empty check.
+		if not hasSource(source.value) then return nil, UNFILLED_CHECK end
+		if not validateConditionCode(source.value, label .. " custom check", report) then
+			return nil, "custom check code"
+		end
+	end
 	local check = { trigger = WA.DeepCopy(trigger), variable = WA.DeepCopy(variable) }
 	if source.op ~= nil then check.op = WA.DeepCopy(source.op) end
 	if source.value ~= nil then check.value = WA.DeepCopy(source.value) end
@@ -2022,7 +2035,22 @@ function WA.CollectImportCode(data, report, prefix)
 		triggers and triggers.disjunctive == "custom")
 
 	local conditions = data.conditions
+	-- A Custom Check is code that runs, so the check half of a condition is
+	-- disclosed alongside its changes. Recursive because a combinator's children
+	-- can each carry one.
+	local function addCheckCode(check, where)
+		if type(check) ~= "table" then return end
+		if check.trigger == -2 then
+			local subs = check.checks or {}
+			for i = 1, table.getn(subs) do addCheckCode(subs[i], where .. " check " .. i) end
+			return
+		end
+		if check.trigger == -1 and check.variable == "customcheck" then
+			addCode(report, where .. " custom check", check.value, true)
+		end
+	end
 	for n = 1, table.getn(conditions or {}) do
+		addCheckCode(conditions[n] and conditions[n].check, prefix .. "condition " .. n)
 		local changes = conditions[n] and conditions[n].changes or {}
 		for i = 1, table.getn(changes) do
 			local change = changes[i]

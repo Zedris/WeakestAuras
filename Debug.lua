@@ -1345,19 +1345,42 @@ function D.Conditions(id)
 		return
 	end
 	local conds = data.conditions or {}
+	local entry, act, pending
+	if WA.GetConditionDebug then entry, act, pending = WA.GetConditionDebug(data.uid) end
 	D.Log(string.format("--- conditions %q: %d condition(s) ---", id, table.getn(conds)))
+	-- A Custom Check's `value` is a whole function body and its `op` an event
+	-- list, so the generic line below says nothing useful about either. Whether
+	-- the source compiled is the question this dump exists to answer for it.
+	local function dumpCheck(prefix, chk)
+		if chk.trigger == -2 then
+			D.Log(string.format("%scheck: %s of %d", prefix, tostring(chk.variable),
+				table.getn(chk.checks or {})))
+			for k = 1, table.getn(chk.checks or {}) do
+				dumpCheck(prefix .. "  ", chk.checks[k])
+			end
+			return
+		end
+		if chk.trigger == -1 and chk.variable == "customcheck" then
+			local compiledFn = entry and entry.customChecks and entry.customChecks[chk.value or ""]
+			local state = "not compiled"
+			if compiledFn then state = "compiled"
+			elseif compiledFn == false then state = "REFUSED (see the aura's warning)" end
+			D.Log(string.format("%scheck: customcheck [%s] events=%s",
+				prefix, state, tostring(chk.op)))
+			return
+		end
+		D.Log(string.format("%scheck: trigger=%s var=%s op=%s value=%s",
+			prefix, tostring(chk.trigger), tostring(chk.variable), tostring(chk.op), tostring(chk.value)))
+	end
 	for i = 1, table.getn(conds) do
 		local c = conds[i]
-		local chk = c.check or {}
-		D.Log(string.format("  [%d] check: trigger=%s var=%s op=%s value=%s",
-			i, tostring(chk.trigger), tostring(chk.variable), tostring(chk.op), tostring(chk.value)))
+		dumpCheck(string.format("  [%d] ", i), c.check or {})
 		local changes = c.changes or {}
 		for j = 1, table.getn(changes) do
 			D.Log(string.format("       change: %s = %s", tostring(changes[j].property), tostring(changes[j].value)))
 		end
 	end
 	if WA.GetConditionDebug then
-		local _, act, pending = WA.GetConditionDebug(data.uid)
 		if act then
 			for cloneId, flags in pairs(act) do
 				local parts = {}
@@ -4539,6 +4562,8 @@ function D.HandleSlash(msg)
 		D.Regions()
 	elseif cmd == "configtest" then
 		D.ConfigTest()
+	elseif cmd == "prof" then
+		WA.Profiling.Command(rest)
 	elseif cmd == "libs" then
 		D.Libs()
 	elseif cmd == "addons" then
@@ -4555,6 +4580,6 @@ function D.HandleSlash(msg)
 		ensureFrame()
 		frame:Hide()
 	else
-		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], auraprobe [unit|all], overflow [unit], timers, linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], cdtest, modeltest [id], swipetest [sizes/WxH...], swipenudge <k> [yflat], swipestress [N], edgetest [state|0], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, soundprobe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, libs, addons, export <id>, import, clear, show, hide")
+		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], auraprobe [unit|all], overflow [unit], timers, linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], cdtest, modeltest [id], swipetest [sizes/WxH...], swipenudge <k> [yflat], swipestress [N], edgetest [state|0], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, soundprobe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, prof [start|stop|report [n]|reset], libs, addons, export <id>, import, clear, show, hide")
 	end
 end

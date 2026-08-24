@@ -290,8 +290,50 @@ function WA.ValidateUserConfig(data)
 	validateUserConfig(data, data.authorOptions, data.config)
 end
 
+-- Upstream's `width` is a number from 0.1 to 2 scaling an AceConfig row; ours is
+-- a two-column grid, so everything under a full row lands in the half column.
+-- 1 and 2 -- the two values its own editor offers -- land exactly where upstream
+-- puts them, and a fractional one degrades to the nearer of the two.
 local function customOptionHalf(option)
 	return (option.width or 1) < 2
+end
+
+-- A range's *track*, as against the hard limits a typed value may reach:
+-- `softMin`/`softMax` where the author gave them, the hard bounds otherwise, and
+-- upstream's 0..100 where there are none of either. The spin box takes both
+-- pairs and keeps them apart; nothing here has to choose between them.
+local function rangeTrack(option)
+	local lo = option.softMin or option.min or 0
+	local hi = option.softMax or option.max or 100
+	if hi < lo then hi = lo end
+	return lo, hi
+end
+
+-- A number option's bounds applied at the write rather than left to the next
+-- validation pass, so a typed value outside the author's range never reaches the
+-- aura's code at all. Snapped onto the step grid first, as the validator does.
+local function clampAuthorNumber(option, value)
+	local min, max, step = option.min, option.max, option.step
+	if step and step > 0 then
+		local origin = min or 0
+		value = origin + step * round((value - origin) / step)
+	end
+	if min and value < min then value = min end
+	if max and value > max then value = max end
+	return value
+end
+
+-- Values reordered so the user reads them alphabetically while the stored value
+-- stays what it was -- an index for a select, a page number for an array group.
+-- The labels decide the order; the values ride along.
+local function sortedByLabel(values, labels)
+	local order = {}
+	for i = 1, table.getn(values) do order[i] = values[i] end
+	table.sort(order, function(first, second)
+		return tostring((labels and labels[first]) or first)
+			< tostring((labels and labels[second]) or second)
+	end)
+	return order
 end
 
 local function setCustomConfig(data, option, value, config)
@@ -305,6 +347,7 @@ local function selectFields(fields, data, option, config)
 		values[i] = i
 		labels[i] = option.values[i]
 	end
+	if option.sortAlphabetically then values = sortedByLabel(values, labels) end
 	local field = {
 		type = "select", name = option.name, values = values, labels = labels,
 		half = customOptionHalf(option),
@@ -389,13 +432,20 @@ local function simpleOptionField(fields, data, option, config)
 			get = function() return optionValue(option, config) end,
 			set = function(value)
 				local number = tonumber(value)
-				if number ~= nil then setCustomConfig(data, option, number, config) end
+				if number == nil then return end
+				local bounded = clampAuthorNumber(option, number)
+				setCustomConfig(data, option, bounded, config)
+				-- The box still shows what was typed while the config holds what the
+				-- author's bounds allow, so the two only agree again after a repaint.
+				if bounded ~= number and WA.RefreshOptions then WA.RefreshOptions() end
 			end,
 		})
 	elseif option.type == "range" then
+		local trackLo, trackHi = rangeTrack(option)
 		table.insert(fields, {
 			type = "range", name = option.name, half = half,
-			min = option.min or 0, max = option.max or 100, step = option.step or 1,
+			min = option.min, max = option.max, step = option.step or option.bigStep or 1,
+			softMin = trackLo, softMax = trackHi, bigStep = option.bigStep,
 			get = function() return optionValue(option, config) end,
 			set = function(value) setCustomConfig(data, option, tonumber(value), config) end,
 		})
@@ -411,7 +461,14 @@ local function simpleOptionField(fields, data, option, config)
 		table.insert(fields, {
 			type = "description", name = option.name or "",
 		})
-		for i = 1, table.getn(option.values or {}) do
+		-- The toggles may be painted in label order, but each still writes at its
+		-- own position: the stored value is a positional array of booleans, so the
+		-- sort is a view and never reaches the config.
+		local order = {}
+		for i = 1, table.getn(option.values or {}) do order[i] = i end
+		if option.sortAlphabetically then order = sortedByLabel(order, option.values) end
+		for position = 1, table.getn(order) do
+			local i = order[position]
 			local index = i
 			table.insert(fields, {
 				type = "toggle", name = option.values[i], half = half,
@@ -518,11 +575,72 @@ local function authorNumberField(index, name, key, data, option, half, options)
 	}, index, key)
 end
 
-local authorMediaTypes = {"sound", "font", "border", "background", "statusbar"}
+-- The same for a field that is genuinely optional -- a range's soft bounds and
+-- its slider step, none of which the schema seeds. Emptying the box means
+-- "unset" rather than "unchanged", which is the only way back off a value the
+-- author typed once; the field above cannot express that, and a range carrying a
+-- softMin it no longer wants exports one.
+local function authorOptionalNumberField(index, name, key, data, option, half)
+	return authorField({
+		type = "input", name = name, half = half,
+		get = function()
+			local value = option[key]
+			return value ~= nil and tostring(value) or ""
+		end,
+		set = function(value)
+			if value == nil or value == "" then
+				setAuthorOption(data, option, key, nil)
+				return
+			end
+			local number = tonumber(value)
+			if number ~= nil then setAuthorOption(data, option, key, number) end
+		end,
+	}, index, key)
+end
+
+local function authorSortToggle(fields, data, option, index)
+	table.insert(fields, authorField({
+		type = "toggle", name = "Sort Alphabetically", half = true,
+		get = function() return option.sortAlphabetically and true or false end,
+		set = function(value)
+			setAuthorOption(data, option, "sortAlphabetically", value and true or false)
+		end,
+	}, index, "sortAlphabetically"))
+end
+
+-- Only the three this client can put a picker behind. Upstream's `border` and
+-- `background` read their lists off LibSharedMedia, which is not here and has
+-- nothing to stand in for it -- the border sub-region draws one hardcoded edge
+-- file and the background one is not a texture at all -- so offering them would
+-- open an empty dropdown, which is worse than not offering the type.
+--
+-- The names stay in author_option_media_defaults and in the labels below: an
+-- imported option already set to one keeps working (its Default falls back to a
+-- plain path box, and authorMediaTypeValues below keeps it selectable so the
+-- dropdown can still show what it is) and exports unchanged.
+local authorMediaTypes = {"sound", "font", "statusbar"}
 local authorMediaLabels = {
 	sound = "Sound", font = "Font", border = "Border",
 	background = "Background", statusbar = "Status Bar",
 }
+
+-- The offered list, plus whatever this option is already set to. Same rule the
+-- array group's Entry Name Source follows: a dropdown must be able to show its
+-- own current value, or the control reads as unset and the first edit silently
+-- changes something the author never touched.
+local function authorMediaTypeValues(option)
+	local values = {}
+	for i = 1, table.getn(authorMediaTypes) do values[i] = authorMediaTypes[i] end
+	local current = option.mediaType
+	if current then
+		for i = 1, table.getn(values) do
+			if values[i] == current then return values end
+		end
+		table.insert(values, current)
+		if not authorMediaLabels[current] then authorMediaLabels[current] = current end
+	end
+	return values
+end
 
 local function authorMediaValues(option)
 	local mediaType = option.mediaType
@@ -546,7 +664,7 @@ end
 
 local function authorMediaFields(fields, data, option, index)
 	table.insert(fields, authorField({
-		type = "select", name = "Media Type", values = authorMediaTypes,
+		type = "select", name = "Media Type", values = authorMediaTypeValues(option),
 		labels = authorMediaLabels, half = true,
 		get = function() return option.mediaType end,
 		set = function(value)
@@ -621,6 +739,7 @@ local function authorMultiselectFields(fields, data, option, index)
 		end,
 	}, index, "values")
 	table.insert(fields, valuesField)
+	authorSortToggle(fields, data, option, index)
 
 	normalizeMultiselectDefault(option)
 	for valueIndex = 1, table.getn(option.values or {}) do
@@ -666,15 +785,21 @@ local function authorSimpleTypeFields(fields, data, option, index)
 		table.insert(fields, authorNumberField(index, "Maximum", "max", data, option, true))
 		table.insert(fields, authorNumberField(index, "Step", "step", data, option, true))
 	elseif optionType == "range" then
+		local trackLo, trackHi = rangeTrack(option)
 		table.insert(fields, authorField({
-			type = "range", name = "Default", min = option.min or 0,
-			max = option.max or 1, step = option.step or .05, half = true,
+			type = "range", name = "Default",
+			min = option.min, max = option.max,
+			softMin = trackLo, softMax = trackHi,
+			step = option.step or option.bigStep or .05, bigStep = option.bigStep, half = true,
 			get = function() return option.default end,
 			set = function(value) setAuthorOption(data, option, "default", tonumber(value)) end,
 		}, index, "default"))
 		table.insert(fields, authorNumberField(index, "Minimum", "min", data, option, true))
 		table.insert(fields, authorNumberField(index, "Maximum", "max", data, option, true))
 		table.insert(fields, authorNumberField(index, "Step", "step", data, option, true))
+		table.insert(fields, authorOptionalNumberField(index, "Soft Min", "softMin", data, option, true))
+		table.insert(fields, authorOptionalNumberField(index, "Soft Max", "softMax", data, option, true))
+		table.insert(fields, authorOptionalNumberField(index, "Slider Step Size", "bigStep", data, option, true))
 	elseif optionType == "color" then
 		table.insert(fields, authorField({
 			type = "color", name = "Default", half = true,
@@ -697,6 +822,7 @@ local function authorSimpleTypeFields(fields, data, option, index)
 			get = function() return option.values end,
 			onChange = function() authorOptionChanged(data) end,
 		}, index, "values"))
+		authorSortToggle(fields, data, option, index)
 	elseif optionType == "media" then
 		authorMediaFields(fields, data, option, index)
 	elseif optionType == "multiselect" then
@@ -749,6 +875,8 @@ local function authorGroupFields(fields, data, option, index)
 		set = function(value) setAuthorOption(data, option, "groupType", value) end,
 	}, index, "groupType"))
 	if option.groupType ~= "array" then return end
+
+	authorSortToggle(fields, data, option, index)
 
 	local limitTypes = {"none", "max", "fixed"}
 	local limitLabels = {none = "Unlimited", max = "Limited", fixed = "Fixed Size"}
@@ -1176,6 +1304,9 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 		values[i] = i
 		labels[i] = mergedLabel(i)
 	end
+	-- The page numbers reordered by entry name; the value stays the page, so
+	-- everything downstream of the dropdown is untouched by the sort.
+	if option.sortAlphabetically then values = sortedByLabel(values, labels) end
 
 	local function referencePage(reference)
 		local entries = referenceEntries(reference)
@@ -1311,6 +1442,29 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				table.remove(current, page)
 				local newCount = table.getn(current)
 				setArrayPage(data, path, newCount > 0 and math.min(page, newCount) or 1)
+				arrayConfigChanged(data)
+			end
+		end)
+	end
+
+	-- Reset Entry: the selected entry's sub-config emptied, which the validation
+	-- that follows refills from the sub-options' defaults. Offered whatever the
+	-- limit type, unlike add and delete -- clearing an entry never changes how
+	-- many there are, so even a fixed-size array can have one put back.
+	if count > 0 then
+		arrayAction(actions, WA.STATUS_TEXTURES .. "standby.tga", "Reset Entry", function()
+			if references then
+				for _, reference in pairs(references) do
+					local current = referenceEntries(reference)
+					local page = referencePage(reference)
+					if current[page] then current[page] = {} end
+				end
+				arrayReferenceChanged(option)
+			else
+				local current = arrayEntries(config, option)
+				local page = getArrayPage(data, path, table.getn(current))
+				if not current[page] then return end
+				current[page] = {}
 				arrayConfigChanged(data)
 			end
 		end)

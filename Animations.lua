@@ -216,10 +216,21 @@ function WA.AnimationCodeIsLive(anim, slot)
 	if type(anim) ~= "table" or anim.type ~= "custom" then return false end
 	return (anim["use_" .. slot] and anim[slot .. "Type"] == "custom") and true or false
 end
+-- Memoized by source: WA.Animate re-enters here on every start, and a looping
+-- animation restarts once per cycle -- re-loadstringing the same curve each
+-- time was a full parse per pulse. `false` caches a source that will not
+-- compile, so a broken custom curve is not re-parsed per loop either.
+local compiledSlots = {}
 local function compileSlot(anim, slot, fallback)
 	local source = WA.AnimationCodeIsLive(anim, slot) and anim[slot .. "Func"]
 	if not source then source = WA.anim_function_strings[anim[slot .. "Type"] or fallback] end
-	return source and WA.LoadFunction(source, nil) or nil
+	if not source then return nil end
+	local fn = compiledSlots[source]
+	if fn == nil then
+		fn = WA.LoadFunction(source, nil) or false
+		compiledSlots[source] = fn
+	end
+	return fn or nil
 end
 local function run(key, anim, elapsed, time)
 	local finish = false
@@ -251,14 +262,19 @@ local function run(key, anim, elapsed, time)
 end
 local function update()
 	if not updating then return end
+	WA.ProfBegin("animations")
 	local time = GetTime(); local elapsed = time - lastUpdate; lastUpdate = time
 	for key, anim in pairs(animations) do run(key, anim, elapsed, time) end
+	WA.ProfEnd("animations")
 	for _ in pairs(animations) do return end
 	updating = false; animationFrame:SetScript("OnUpdate", nil)
 end
 animationFrame:SetScript("OnUpdate", update)
+-- animations is keyed by the region frame itself -- tostring(frame) per call
+-- was a string allocation on every Animate/Cancel, and Cancel runs in every
+-- clone acquire and release.
 function WA.Animate(namespace, uid, kind, anim, region, inverse, onFinished, loop, cloneId)
-	local key = tostring(region); local source = anim
+	local key = region; local source = anim
 	if source and source.type == "preset" then source = WA.anim_presets[source.preset] end
 	if not source or source.type ~= "custom" then if animations[key] then WA.CancelAnimation(region, true, true, true, true, true) end return false end
 	local valid = source.use_translate or source.use_alpha or (source.use_scale and region.Scale) or (source.use_rotate and region.SetAnimRotation) or (source.use_color and region.Color)
@@ -275,7 +291,7 @@ function WA.Animate(namespace, uid, kind, anim, region, inverse, onFinished, loo
 	return true
 end
 function WA.CancelAnimation(region, resetPos, resetAlpha, resetScale, resetRotation, resetColor, doOnFinished)
-	local key, anim = tostring(region), animations[tostring(region)]
+	local key, anim = region, animations[region]
 	if not anim then return false end
 	if resetPos or resetAlpha or resetScale or resetRotation or resetColor then clear(anim) end
 	animations[key] = nil

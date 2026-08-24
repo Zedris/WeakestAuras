@@ -120,12 +120,18 @@
 -- that resyncs from external state without firing onClick.
 --
 -- NewColorSwatch(parent, spec) -- a swatch button that opens the stock
--- ColorPickerFrame (with opacity). spec:
+-- ColorPickerFrame (with opacity). Shift-Click copies the swatch's colour to
+-- the library-wide colour clipboard, Ctrl-Click pastes it; a hover tooltip
+-- carries the current colour and both hints. spec:
 --   get() -> {r,g,b,a}   -- current colour (a defaults to 1 if absent)
 --   set({r,g,b,a})       -- store a picked colour
 --   width/height (default 20), swatchSize (inner fill, default 14)
 -- Returns the button with a `.repaint()` method to re-read get() after an
 -- external change.
+--
+-- GetColorClipboard() / SetColorClipboard(c) -- the {r,g,b,a} every swatch
+-- copies to and pastes from, for a consumer wanting its own copy/paste
+-- affordance on the same clipboard. Both deal in copies, and nil means empty.
 --
 -- NewTextBox(parent, spec) -- a single-line edit box with a tooltip-style backdrop
 -- (not InputBoxTemplate -- that template's border textures render a black bar at
@@ -182,14 +188,19 @@
 -- range. spec:
 --   label         -- caption above the track
 --   min, max, step, width (default 150)
---   softMax       -- optional: the top of the *track*, where that is lower than
---                    the highest value the field accepts. Dragging and stepping
---                    stay within min..softMax; a typed number may go past it, up
---                    to `max` where one is given and without limit where it is
---                    not. A value already above the track keeps the fill pinned
---                    full and the up-step disabled, and a move may not raise it
---                    further. Without a softMax the track spans min..max, so a
---                    field that wants a hard ceiling simply omits it.
+--   softMin, softMax
+--                 -- optional: the ends of the *track*, where those sit inside
+--                    the range the field accepts. Dragging and stepping stay
+--                    within softMin..softMax; a typed number may go past either,
+--                    out to `min`/`max` where one is given and without limit
+--                    where it is not. A value already outside the track keeps
+--                    the fill pinned to that end and that end's step disabled,
+--                    and a move may not push it further out. Without them the
+--                    track spans min..max, so a field that wants only hard
+--                    limits simply omits them.
+--   bigStep       -- optional: the step a drag or an arrow moves by, where that
+--                    is coarser than the `step` a typed value snaps to. Without
+--                    it both use `step`.
 --   textureDir    -- absolute path to this library's textures\ (see the
 --                    no-self-path note below); the two step buttons are the
 --                    shared `up` arrow given a quarter turn each
@@ -204,8 +215,8 @@
 --   get()         -- optional: seeds the initial value through `.setValue`
 -- Typing commits on Enter and on focus loss, reverts on Escape, and snaps and
 -- clamps to min/max/step -- so the box can never hold a value the slider half of
--- the control could not have produced, `softMax` above being the one deliberate
--- exception to that. Returns the frame with `.setValue(v)`
+-- the control could not have produced, the soft bounds above being the one
+-- deliberate exception to that. Returns the frame with `.setValue(v)`
 -- (resync without firing onChange), `.getValue()`, `.setWidth(w)` (the whole
 -- control, buttons included -- the track takes what is left), `.edit` (the edit
 -- box, for a pooling consumer that must clear focus before rebinding), `.label`
@@ -359,7 +370,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 22
+local MAJOR, MINOR = "LibWidgets-1.0", 23
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -922,6 +933,40 @@ function LibWidgets.NewAnchorGrid(parent, spec)
 	return frame
 end
 
+-- The colour a swatch was last copied from, shared by every swatch this library
+-- builds so a colour crosses panels rather than being trapped in the field it
+-- came from. In memory only -- it does not outlive the session.
+local colorClipboard = nil
+
+-- Both halves deal in copies: the clipboard must not alias the field a colour
+-- was copied out of (a later edit there would rewrite the clipboard) nor the
+-- one it is pasted into.
+function LibWidgets.GetColorClipboard()
+	local c = colorClipboard
+	if not c then return nil end
+	return { c[1], c[2], c[3], c[4] }
+end
+
+function LibWidgets.SetColorClipboard(c)
+	if not c then colorClipboard = nil; return end
+	colorClipboard = { c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1 }
+end
+
+local function colorHex(c)
+	return string.format("#%02X%02X%02X",
+		math.floor((c[1] or 1) * 255 + 0.5),
+		math.floor((c[2] or 1) * 255 + 0.5),
+		math.floor((c[3] or 1) * 255 + 0.5))
+end
+
+-- The hex plus an alpha reading, which is shown only when there is one to make:
+-- an opaque colour would otherwise carry a "100%" on every line.
+local function colorLabel(c)
+	local a = c[4] or 1
+	if a >= 1 then return colorHex(c) end
+	return colorHex(c) .. "  " .. math.floor(a * 100 + 0.5) .. "%"
+end
+
 -- A colour swatch opening the stock ColorPickerFrame; see the header comment
 -- for spec. OpacitySliderFrame reports 1-alpha, hence the inversions.
 function LibWidgets.NewColorSwatch(parent, spec)
@@ -946,8 +991,45 @@ function LibWidgets.NewColorSwatch(parent, spec)
 	end
 	paint()
 	b.repaint = paint
+
+	-- The copy/paste hints have nowhere else to live -- the swatch has no room
+	-- for a label of its own and the field's caption belongs to the consumer --
+	-- so the tooltip is the whole of their discoverability.
+	local hovered = false
+	local function showTip()
+		GameTooltip:SetOwner(b, "ANCHOR_RIGHT")
+		local c = get()
+		if c then GameTooltip:AddLine(colorLabel(c), 1, 1, 1)
+		else GameTooltip:AddLine("No single colour", 0.6, 0.6, 0.6) end
+		GameTooltip:AddLine("Shift-Click to copy", 0.6, 0.6, 0.6)
+		local cb = colorClipboard
+		if cb then
+			GameTooltip:AddLine("Ctrl-Click to paste " .. colorLabel(cb), 0.6, 0.6, 0.6)
+		else
+			GameTooltip:AddLine("Nothing copied", 0.4, 0.4, 0.4)
+		end
+		GameTooltip:Show()
+	end
+	b:SetScript("OnEnter", function() hovered = true; showTip() end)
+	b:SetScript("OnLeave", function() hovered = false; GameTooltip:Hide() end)
+
 	b:SetScript("OnClick", function()
 		LibWidgets.CloseAllMenus()
+		if IsShiftKeyDown() then
+			-- A nil read is several disagreeing sources, so there is no one
+			-- colour to copy; the clipboard keeps whatever it held.
+			local c = get()
+			if c then
+				LibWidgets.SetColorClipboard(c)
+				if hovered then showTip() end   -- the paste line lights up under the cursor
+			end
+			return
+		end
+		if IsControlKeyDown() then
+			local c = LibWidgets.GetColorClipboard()
+			if c then set(c); paint() end
+			return
+		end
 		local c = get() or { 1, 1, 1, 1 }
 		local cr, cg, cbl, ca = c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1
 		ColorPickerFrame.func = function()
@@ -1281,43 +1363,65 @@ function LibWidgets.NewSpinBox(parent, spec)
 	-- Read out of `spec` on every use rather than captured, so a consumer pooling
 	-- one instance across fields rebinds by assigning to the spec table it passed
 	-- in (the same contract NewSlider's onChange/format follow).
+	-- The track: where a drag or a step may travel, and how far one step moves.
+	-- `min`/`max` are the field's hard limits; `softMin`/`softMax` narrow the
+	-- track inside them, and `bigStep` coarsens the track's step where typed
+	-- entry wants a finer one.
 	local function bounds()
-		local lo, hi = spec.min or 0, spec.softMax or spec.max or 1
+		local lo, hi = spec.softMin or spec.min or 0, spec.softMax or spec.max or 1
 		if hi < lo then hi = lo end
-		return lo, hi, spec.step or 1
+		return lo, hi, spec.bigStep or spec.step or 1
+	end
+
+	-- The step a typed value or an external resync snaps to, which is the finer
+	-- of the two where a field names both.
+	local function typedStep()
+		return spec.step or spec.bigStep or 1
 	end
 
 	-- To the nearest step, then into range. Everything that can set the value --
 	-- drag, step, typed entry, the external resync -- goes through this, so the
 	-- box can never show a number off the step grid.
 	--
-	-- `cap` is the ceiling this particular move may reach, and is what makes a
-	-- `softMax` field work: the track's top for a drag or a step, `spec.max` for
-	-- a typed value or a resync -- which is nil on a field that names only a
-	-- softMax, and nil here means no ceiling at all.
-	local function snap(v, cap)
+	-- `floor` and `cap` are the limits this particular move may reach, and are
+	-- what make a `softMin`/`softMax` field work: the track's ends for a drag or
+	-- a step, `spec.min`/`spec.max` for a typed value or a resync -- either of
+	-- which is nil on a field naming only the soft bound, and nil here means no
+	-- limit on that side at all.
+	--
+	-- The grid's origin is the field's hard floor rather than the track's, so a
+	-- typed value below a softMin still lands on the same step grid the track's
+	-- own values do.
+	local function snap(v, step, floor, cap)
 		v = tonumber(v)
 		if v == nil then return value end
-		local lo, _, step = bounds()
-		if step and step > 0 then v = lo + math.floor((v - lo) / step + 0.5) * step end
-		if v < lo then v = lo elseif cap and v > cap then v = cap end
+		local origin = spec.min or spec.softMin or 0
+		if step and step > 0 then v = origin + math.floor((v - origin) / step + 0.5) * step end
+		if floor and v < floor then v = floor elseif cap and v > cap then v = cap end
 		return v
 	end
 
-	-- The ceiling for a move starting at `from`. A value sitting above the track
-	-- keeps its own, so the first pixel of a drag doesn't yank a typed 96 back
-	-- down to the track's 72 -- it can only be dragged or stepped downwards.
+	-- The limits for a move starting at `from`. A value sitting outside the track
+	-- keeps its own on that side, so the first pixel of a drag doesn't yank a
+	-- typed 96 back down to the track's 72 -- it can only be dragged or stepped
+	-- back towards the track.
 	local function trackCeiling(from)
 		local _, hi = bounds()
 		if from > hi then return from end
 		return hi
 	end
 
+	local function trackFloor(from)
+		local lo = bounds()
+		if from < lo then return from end
+		return lo
+	end
+
 	local paint, setValue
 
 	local function nudge(dir)
 		local _, _, step = bounds()
-		setValue(value + dir * (step or 1), true, trackCeiling(value))
+		setValue(value + dir * (step or 1), true, trackFloor(value), trackCeiling(value), step)
 	end
 
 	local arrow = (spec.textureDir or "") .. "up"
@@ -1406,9 +1510,10 @@ function LibWidgets.NewSpinBox(parent, spec)
 
 	-- onChange fires only on a real move, which is what lets Enter commit through
 	-- the focus-lost path as well without reporting the same edit twice.
-	setValue = function(v, fire, cap)
+	setValue = function(v, fire, floor, cap, step)
+		if floor == nil then floor = spec.min end
 		if cap == nil then cap = spec.max end
-		v = snap(v, cap)
+		v = snap(v, step or typedStep(), floor, cap)
 		local changed = (v ~= value) or blank
 		blank = false
 		value = v
@@ -1448,12 +1553,12 @@ function LibWidgets.NewSpinBox(parent, spec)
 			gripColor(SPIN_GRIP_IDLE)
 			return
 		end
-		local lo, hi = bounds()
+		local lo, hi, step = bounds()
 		local span = f.trackSpan or 0
 		if span <= 0 then return end
 		local x = GetCursorPosition() / handle:GetEffectiveScale()
 		setValue(dragStartValue + ((x - dragStartX) / span) * (hi - lo), true,
-			trackCeiling(dragStartValue))
+			trackFloor(dragStartValue), trackCeiling(dragStartValue), step)
 	end
 
 	handle:SetScript("OnMouseDown", function()

@@ -60,12 +60,23 @@ end
 local frameTickRegions = {}
 local tickFrame = CreateFrame("Frame")
 tickFrame:SetScript("OnUpdate", function()
+	WA.ProfBegin("text frame-tick")
 	for region in pairs(frameTickRegions) do
 		region.subRegionEvents:Notify("FrameTick")
 	end
+	WA.ProfEnd("text frame-tick")
 end)
-function proto.RegisterForFrameTick(region) frameTickRegions[region] = true end
-function proto.UnregisterForFrameTick(region) frameTickRegions[region] = nil end
+-- Hidden while the set is empty -- hiding a frame is how an OnUpdate is
+-- switched off on this client, same as the glow ticker and FRAME_UPDATE pulse.
+tickFrame:Hide()
+function proto.RegisterForFrameTick(region)
+	frameTickRegions[region] = true
+	tickFrame:Show()
+end
+function proto.UnregisterForFrameTick(region)
+	frameTickRegions[region] = nil
+	if not next(frameTickRegions) then tickFrame:Hide() end
+end
 function proto.CountFrameTick()
 	local n = 0
 	for _ in pairs(frameTickRegions) do n = n + 1 end

@@ -270,10 +270,12 @@ local function glowSummary(data)
 end
 
 local function step()
+	WA.ProfBegin("glow ticker")
 	antIndex = antIndex + 1
 	if antIndex > ANT_FRAMES then antIndex = 1 end
 	local now = GetTime()
 	for overlay in pairs(lit) do overlay.renderer.apply(overlay, now) end
+	WA.ProfEnd("glow ticker")
 end
 
 local function light(overlay)

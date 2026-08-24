@@ -3673,11 +3673,20 @@ local function newCooldownWatcher(spec)
 	local w = { keys = {}, tick = {}, cache = {}, announced = {}, frame = nil, ticker = nil }
 
 	-- Emits nothing, so generated trigger code -- which already runs inside a
-	-- scan -- can call it without re-entering dispatch.
+	-- scan -- can call it without re-entering dispatch. Mutates the cached
+	-- entry in place: every cooldown trigger reads through here on every scan,
+	-- and nothing holds the table across calls -- callers take fields off it.
 	local function refresh(key)
 		local start, duration, enabled = spec.pollRaw(key)
-		w.cache[key] = { start = start or 0, duration = duration or 0, enabled = enabled }
-		return w.cache[key]
+		local c = w.cache[key]
+		if not c then
+			c = {}
+			w.cache[key] = c
+		end
+		c.start = start or 0
+		c.duration = duration or 0
+		c.enabled = enabled
+		return c
 	end
 
 	local function pollKey(key)
@@ -3689,7 +3698,12 @@ local function newCooldownWatcher(spec)
 		-- filter is interested (w.tick), so its threshold flips near real time
 		-- rather than only at start/end -- a running cooldown emits no natural event.
 		if changed or (w.tick[key] and running) then
-			w.announced[key] = { start = c.start, duration = c.duration }
+			if not a then
+				a = {}
+				w.announced[key] = a
+			end
+			a.start = c.start
+			a.duration = c.duration
 			WA.ScanEvents(spec.changedEvent, key)
 		end
 		-- Schedule the ready flip for real cooldowns, so the display clears
@@ -4840,6 +4854,18 @@ local function ensureEventRegistered(event)
 	pcall(eventFrame.RegisterEvent, eventFrame, event)
 end
 
+-- The same registration for a consumer outside this file: a Custom Check
+-- condition names its own events, and they have to arrive through the shared
+-- frame above rather than through one of the listener's own. A second frame
+-- registered for the same name would deliver the event twice -- once to each --
+-- so everything that wants a game event asks here and reads it off WA.ScanEvents.
+-- An internal WA_* name is accepted and registers nothing, which is correct: it
+-- reaches ScanEvents already.
+function WA.EnsureGameEventRegistered(event)
+	if type(event) ~= "string" or event == "" then return end
+	ensureEventRegistered(event)
+end
+
 -- The per-frame pulse behind `check = "update"`. Its own frame because an
 -- OnUpdate on the shared event frame would run for every display in the addon,
 -- and because hiding a frame is how an OnUpdate is switched off -- there is no
@@ -5265,20 +5291,25 @@ end
 -- One registered name's subscribers, delivered under that name. `event` is the
 -- name the trigger listed, which is also what passesUnitFilter keys its
 -- per-event unit filters by.
+-- `dirty` is created lazily on the first hit and passed back, because most
+-- scans change nothing -- FRAME_UPDATE arrives once a frame, and a table per
+-- no-op scan was steady churn on a collector that stops the world.
 local function scanRegistered(event, dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	local byId = loaded_events[event]
-	if not byId then return end
+	if not byId then return dirty end
 	for id, byTrigger in pairs(byId) do
 		for triggernum, ti in pairs(byTrigger) do
 			if not WA.forced[id] and passesUnitFilter(ti, event, a1)
 				and (event ~= "FRAME_UPDATE" or checkOnUpdateThrottle(ti)) then
 				if runTriggerFunc(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9) then
+					dirty = dirty or {}
 					dirty[id] = true
 					WA.NotifyWatchedTriggers(id, triggernum)
 				end
 			end
 		end
 	end
+	return dirty
 end
 
 -- The producer entry point watchers and the event frame both call (§4.3):
@@ -5287,15 +5318,16 @@ end
 -- retail names (EVENT_COMPAT) also wakes their subscribers, each handed the
 -- name it listed rather than the one the client fired.
 function WA.ScanEvents(event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
-	local dirty = {}
-	scanRegistered(event, dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+	local dirty = scanRegistered(event, nil, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	local compat = EVENT_COMPAT_SOURCES[event]
 	if compat then
 		for i = 1, table.getn(compat) do
-			scanRegistered(compat[i], dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+			dirty = scanRegistered(compat[i], dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 		end
 	end
-	for id in pairs(dirty) do WA.UpdatedTriggerState(id) end
+	if dirty then
+		for id in pairs(dirty) do WA.UpdatedTriggerState(id) end
+	end
 end
 
 -- A handler on this client reads the event payload off the globals arg1..arg9,

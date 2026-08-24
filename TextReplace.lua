@@ -789,14 +789,48 @@ local function replaceRaidMarkers(text)
 	return text
 end
 
+-- Persistent scratch for the assembly below, fed through upvalues rather than
+-- fresh closures per call: this runs per frame for every %p text, and a table
+-- plus two closures per call was measurable churn. Safe because nothing walk
+-- reaches re-enters ReplacePlaceHolders -- formatters and dynamic_texts are
+-- all internal, and %c values are read precomputed off the region.
+local repOut, repN = {}, 0
+local repRegion, repFormatters, repCustom
+local function repLiteral(lit)
+	repN = repN + 1
+	repOut[repN] = lit
+end
+local function repSymbol(sym)
+	repN = repN + 1
+	repOut[repN] = valueForSymbol(sym, repRegion, repFormatters, repCustom)
+end
+
 function WA.ReplacePlaceHolders(text, region, formatters, customValues)
 	if not text or text == "" then return "" end
-	local out = {}
-	walk(text,
-		function(lit) table.insert(out, lit) end,
-		function(sym) table.insert(out, valueForSymbol(sym, region, formatters, customValues)) end)
-	local s = replaceRaidMarkers(table.concat(out))
-	return (string.gsub(s, "\\n", "\n"))
+	-- A lone two-byte symbol -- "%p", "%s", "%n" -- is the overwhelmingly
+	-- common text and runs per frame, so it resolves directly with no walk and
+	-- no assembly (upstream's own two-byte fast path). Anything else after the
+	-- "%" falls through to the walker, which knows what to do with it.
+	if string.len(text) == 2 and string.byte(text, 1) == 37 then
+		local sym = string.sub(text, 2)
+		if sym == "%" then return "%" end
+		if isWordByte(string.byte(text, 2)) then
+			local s = replaceRaidMarkers(valueForSymbol(sym, region, formatters, customValues))
+			if string.find(s, "\\n", 1, true) then
+				s = string.gsub(s, "\\n", "\n")
+			end
+			return s
+		end
+	end
+	repRegion, repFormatters, repCustom = region, formatters, customValues
+	repN = 0
+	walk(text, repLiteral, repSymbol)
+	repRegion, repFormatters, repCustom = nil, nil, nil
+	local s = replaceRaidMarkers(table.concat(repOut, "", 1, repN))
+	if string.find(s, "\\n", 1, true) then
+		s = string.gsub(s, "\\n", "\n")
+	end
+	return s
 end
 
 -- Walks the distinct formattable symbols of `text`, which may be one string or

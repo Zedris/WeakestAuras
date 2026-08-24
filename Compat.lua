@@ -62,15 +62,30 @@ end
 -- xpcall-wrapped call with the aura id prefixed onto any error, so a broken
 -- aura reports itself and fails alone rather than taking down a whole tick
 -- (§12's error-attribution pattern, minus the sandbox). 5.0's xpcall
--- takes no call args, so the arguments are captured as upvalues in a wrapper
--- closure instead of forwarded -- capped at eleven, which is what the widest
--- call site needs: a compiled trigger function takes (state, event, arg1..arg9).
--- Returns the pcall-style (ok, result-or-error) so callers can branch on success.
+-- takes no call args, so the arguments are staged in the file-locals below and
+-- consumed by one persistent dispatcher -- capped at eleven, which is what the
+-- widest call site needs: a compiled trigger function takes (state, event,
+-- arg1..arg9). Returns the pcall-style (ok, result-or-error) so callers can
+-- branch on success.
+--
+-- The staging is safe under nesting, and the reason is load-bearing: to execute
+-- `return dfn(d1, ...)` Lua reads every one of these upvalues onto the stack
+-- *before* the call, so by the time dfn's body runs -- the only place a nested
+-- safecall can overwrite them -- the outer call has already consumed them. Do
+-- not "simplify" this back to a fresh closure per call: safecall sits under
+-- nearly every dispatch in the addon, and two closures per call was a real
+-- share of the steady-state allocation churn.
+local errHandler = function(err) return err end
+local dfn, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11
+local function dispatch()
+	return dfn(d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11)
+end
 function WA.safecall(errTag, fn, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11)
 	if type(fn) ~= "function" then return false, "not a function" end
-	local ok, res = xpcall(function() return fn(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) end, function(err)
-		return err
-	end)
+	dfn = fn
+	d1, d2, d3, d4, d5, d6 = a1, a2, a3, a4, a5, a6
+	d7, d8, d9, d10, d11 = a7, a8, a9, a10, a11
+	local ok, res = xpcall(dispatch, errHandler)
 	if not ok then
 		-- The options preview runs trigger code that was written to read a live
 		-- event payload, and an aura opted into swallowing that (WA2's

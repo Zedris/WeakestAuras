@@ -10,7 +10,7 @@
 --     key = "...",         -- stable field id, see below; omitted for header/button
 --     get = function() end, set = function(value) end,   -- color: get/set a {r,g,b,a}
 --     half = true,         -- pack two-per-row (any non-header type); default full row
---     min, max, step, softMax,   -- range only
+--     min, max, step, softMin, softMax, bigStep,   -- range only
 --     values, labels,      -- select only: ordered values + optional value->label
 --     swatches,            -- select only: value -> texture path; each entry (and
 --                          -- the button face) previews it as a filled bar
@@ -29,10 +29,12 @@
 -- `summary` -- appended to `name` in grey, so the folded state still says what
 -- the hidden rows hold.
 -- A `range` is a spin box (LibWidgets.NewSpinBox), not a bare slider: `min`/
--- `max`/`step` drive the track, and the value is typeable inside it. A `softMax`
--- caps the track without capping the field: dragging and stepping stop there,
--- typing carries on up to `max` if there is one and without limit if there is
--- not (WeakAuras2's own softMax, which its spin box treats the same way).
+-- `max`/`step` drive the track, and the value is typeable inside it. `softMin`/
+-- `softMax` narrow the track without narrowing the field: dragging and stepping
+-- stop there, typing carries on out to `min`/`max` if there are any and without
+-- limit if there are not, and `bigStep` coarsens what a drag or an arrow moves
+-- by while `step` still governs a typed value (WeakAuras2's own four fields,
+-- which its spin box treats the same way).
 -- `code` is a `multiline` for user-authored Lua: syntax-coloured per keystroke
 -- unless WeakestAurasDB.codeEditorLive is turned off (/wa codelive), in which
 -- case colouring waits for blur. With
@@ -1757,7 +1759,7 @@ local function placeField(page, f, x, y, w)
 		s.edit:ClearFocus()
 		s.bind.label, s.bind.fmt, s.bind.decimals = f.name, f.fmt, f.decimals
 		s.bind.min, s.bind.max, s.bind.step = f.min, f.max, f.step
-		s.bind.softMax = f.softMax
+		s.bind.softMin, s.bind.softMax, s.bind.bigStep = f.softMin, f.softMax, f.bigStep
 		s.setWidth(w)
 		s.setValue(f.get())
 		s.bind.set = f.set

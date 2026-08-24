@@ -1159,7 +1159,10 @@ function S.defaultOpValue(vtype, template)
 	elseif vtype == "number" then return ">=", 1
 	elseif vtype == "bool" then return "==", true
 	elseif vtype == "select" then return "==", (template and template.values and template.values[1]) or ""
-	elseif vtype == "combination" or vtype == "alwaystrue" then return nil, nil end
+	-- A custom check's op is its event list and its value the author's Lua;
+	-- neither has a sensible starting text, and a seeded one would be code the
+	-- user did not write.
+	elseif vtype == "combination" or vtype == "alwaystrue" or vtype == "customcheck" then return nil, nil end
 	return "==", ""
 end
 
@@ -1333,6 +1336,13 @@ local function findMatchingCondition(all, needle, start, templates)
 		if cond.check.trigger == needle.check.trigger and cond.check.variable == needle.check.variable then
 			if cond.check.trigger == -2 then
 				if compareSubChecks(cond.check.checks, needle.check.checks, templates) then return start end
+			elseif cond.check.variable == "customcheck" then
+				-- Stricter, as upstream is: the code and its event list are the whole
+				-- of what this row edits, so a merge that blanked both would leave
+				-- nothing to edit and no way to tell the two checks apart.
+				if cond.check.op == needle.check.op and cond.check.value == needle.check.value then
+					return start
+				end
 			else
 				return start
 			end
@@ -1674,6 +1684,25 @@ local function conditionOptionsCore(fields, members)
 					fanCheck(cond, path, function(c) c.op = "=="; c.value = v end)
 				end,
 			}, "Value", "value"))
+		elseif vtype == "customcheck" then
+			-- The one check whose two halves are not an operator and a value: `op`
+			-- is the whitespace-separated list of extra events the check
+			-- re-evaluates on, `value` the author's Lua. Both are edited through
+			-- the op/value seats regardless, so the merge dress and the write
+			-- fan-out reach them without a case of their own.
+			table.insert(out, dress({
+				type = "input", name = "Additional Events", indent = indent,
+				get = function() if opDiff then return nil end return check.op end,
+				set = function(v) fanCheck(cond, path, function(c) c.op = v end) end,
+			}, "Additional Events", "op"))
+			table.insert(out, dress({
+				type = "code", name = "Custom Check", height = 80, indent = indent,
+				validate = function(txt)
+					return W.LuaSyntaxError(WA.WrapFunctionSource(txt), "custom check")
+				end,
+				get = function() if valDiff then return nil end return check.value end,
+				set = function(v) fanCheck(cond, path, function(c) c.value = v end) end,
+			}, "Custom Check", "value"))
 		else -- string
 			table.insert(out, dress({
 				type = "select", name = "Op", half = true, indent = indent,

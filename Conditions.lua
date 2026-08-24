@@ -20,7 +20,8 @@ if WeakestAuras.disabled then return end
 local WA = WeakestAuras
 
 -- compiled[uid] = { data, properties (WA.GetProperties map), templates
--- ([triggernum] = condition-variable map) }. Rebuilt on every WA.Add via
+-- ([triggernum] = condition-variable map), customChecks (source -> compiled
+-- function, or false where it would not compile) }. Rebuilt on every WA.Add via
 -- WA.LoadConditions; keyed by uid (stable across rename) so a rename needs no
 -- fixup here.
 local compiled = {}
@@ -49,8 +50,57 @@ WA.globalConditions = {
 	-- an absent value as false and invert the one condition that cannot fail.
 	alwaystrue = { display = "Always True", type = "alwaystrue",
 		get = function() return true end },
+	-- The only route from an aura's `config` into a condition, and the reason it
+	-- carries no `get`: the answer comes from running the author's Lua inside the
+	-- aura environment, not from reading a shared state. `check.value` holds that
+	-- source and `check.op` the whitespace-separated list of extra events it
+	-- re-evaluates on.
+	customcheck = { display = "Custom Check", type = "customcheck" },
 }
 local GLOBAL_EVENTS = { "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED", "PLAYER_TARGET_CHANGED" }
+
+-- ---------------------------------------------------------------------------
+-- Custom Check: compilation and its dynamic events (§10)
+-- ---------------------------------------------------------------------------
+
+-- [event] = { [uid] = true } -- which auras re-evaluate when a named event
+-- fires. The events are the author's, so the set is unbounded and cannot live on
+-- GLOBAL_EVENTS' fixed list.
+local customCheckEvents = {}
+
+-- Walks one check tree, compiling every Custom Check's source and collecting the
+-- events they ask for. Compiled per WA.Add and cached on the aura's entry keyed
+-- by the source itself, so two conditions sharing a snippet share one function
+-- and no evaluation ever reaches loadstring. A source that fails to compile
+-- caches `false`, which both stops the retry and answers the check false.
+local function collectCustomChecks(check, entry, events, label)
+	if type(check) ~= "table" then return end
+	if check.trigger == -2 then
+		local subs = check.checks or {}
+		for i = 1, table.getn(subs) do collectCustomChecks(subs[i], entry, events, label) end
+		return
+	end
+	if check.trigger ~= -1 or check.variable ~= "customcheck" then return end
+	local source = check.value
+	if type(source) == "string" and source ~= "" and entry.customChecks[source] == nil then
+		entry.customChecks[source] = WA.LoadFunction(source, label) or false
+	end
+	if type(check.op) == "string" then
+		for event in string.gfind(check.op, "[%w_:]+") do events[event] = true end
+	end
+end
+
+-- This aura's event registrations replaced wholesale, so a check that dropped an
+-- event stops waking on it. Registration rides the trigger system's frame: a
+-- frame of our own registered for the same name would deliver it twice.
+local function setCustomCheckEvents(uid, events)
+	for _, listeners in pairs(customCheckEvents) do listeners[uid] = nil end
+	for event in pairs(events) do
+		customCheckEvents[event] = customCheckEvents[event] or {}
+		customCheckEvents[event][uid] = true
+		if WA.EnsureGameEventRegistered then WA.EnsureGameEventRegistered(event) end
+	end
+end
 
 -- ---------------------------------------------------------------------------
 -- Vocabulary: changeable properties + checkable variables
@@ -186,10 +236,24 @@ local function compareValue(vtype, op, actual, value)
 	end
 end
 
+-- The compiled Custom Check for this check, run inside the aura environment so
+-- `aura_env.config` is what the author's `return aura_env.config.foo` reads.
+-- Nothing else in this file needs the environment, so the push/pop is here
+-- rather than around the whole run, where upstream puts its equivalent -- a
+-- compiled condition function is one call, and there is nowhere cheaper inside
+-- it to draw the line.
+local function runCustomCheck(entry, check, region)
+	local fn = entry.customChecks and entry.customChecks[check.value or ""]
+	if not fn then return false end
+	local who = region or entry.data.id
+	local ok, res = WA.RunAuraFunc(who, entry.data.id .. ": custom check", fn, region and region.state)
+	return (ok and res) and true or false
+end
+
 -- Returns (active, nextFlip): active is this check's boolean now; nextFlip is
 -- the soonest future time a timer/elapsedTimer sub-result would change (or nil),
 -- so the caller can schedule an exact recheck instead of polling.
-local function evalCheck(check, states, entry, now)
+local function evalCheck(check, states, entry, now, region)
 	local trig = check.trigger
 	if trig == -2 then
 		-- AND/OR combinator over nested checks.
@@ -198,7 +262,7 @@ local function evalCheck(check, states, entry, now)
 		local res = not isOr -- AND starts true, OR starts false
 		local nextFlip
 		for i = 1, table.getn(subs) do
-			local r, f = evalCheck(subs[i], states, entry, now)
+			local r, f = evalCheck(subs[i], states, entry, now, region)
 			if isOr then if r then res = true end
 			else if not r then res = false end end
 			if f and (not nextFlip or f < nextFlip) then nextFlip = f end
@@ -208,6 +272,7 @@ local function evalCheck(check, states, entry, now)
 		local g = WA.globalConditions[check.variable]
 		if not g then return false end
 		if g.type == "alwaystrue" then return true end
+		if g.type == "customcheck" then return runCustomCheck(entry, check, region) end
 		return compareValue("bool", check.op, g.get(), check.value)
 	else
 		local state = states[trig]
@@ -300,7 +365,7 @@ runFor = function(region, uid, hideRegion)
 		if hideRegion then
 			active = false
 		else
-			active, flip = evalCheck(conditions[i].check, states, entry, now)
+			active, flip = evalCheck(conditions[i].check, states, entry, now, region)
 		end
 		newActive[i] = active and true or false
 		if flip and (not nextFlip or flip < nextFlip) then nextFlip = flip end
@@ -392,11 +457,20 @@ end
 function WA.LoadConditions(data)
 	if WA.IsGroup(data) then return end
 	local uid = data.uid
-	compiled[uid] = {
+	local entry = {
 		data = data,
 		properties = WA.GetProperties(data),
 		templates = WA.GetConditionTemplates(data),
+		customChecks = {},
 	}
+	compiled[uid] = entry
+	local events = {}
+	local conditions = data.conditions or {}
+	for i = 1, table.getn(conditions) do
+		collectCustomChecks(conditions[i].check, entry, events,
+			tostring(data.id) .. ": condition " .. i .. " custom check")
+	end
+	setCustomCheckEvents(uid, events)
 	-- Forget prior activation so a recompiled aura re-evaluates from scratch
 	-- (its regions get re-applied by the WA.Add that called us).
 	activated[uid] = nil
@@ -406,6 +480,7 @@ function WA.UnloadConditions(data)
 	local uid = data.uid
 	compiled[uid] = nil
 	activated[uid] = nil
+	setCustomCheckEvents(uid, {})
 	for key, timer in pairs(scheduled) do
 		local sep = string.find(key, "\0", 1, true)
 		if sep and string.sub(key, 1, sep - 1) == uid then
@@ -445,3 +520,29 @@ globalFrame:SetScript("OnEvent", function()
 		end
 	end)
 end)
+
+-- ---------------------------------------------------------------------------
+-- Custom Check events: only the auras that named an event, and only their shown
+-- clones. Narrower than the global sweep above on purpose -- an author is free
+-- to list a high-rate event, and a fixed list of three cannot be.
+--
+-- Delivered by wrapping WA.ScanEvents rather than by a frame of our own: that
+-- is where the trigger system already funnels both game events and its internal
+-- WA_* ones, so listing either kind in a check works and neither arrives twice.
+-- ---------------------------------------------------------------------------
+
+local function rerunConditions(uid)
+	local entry = compiled[uid]
+	if not entry or not WA.ForEachClone then return end
+	WA.ForEachClone(entry.data.id, function(region)
+		if region.toShow then WA.RunConditions(region, uid, false) end
+	end)
+end
+
+local originalScanEvents = WA.ScanEvents
+WA.ScanEvents = function(event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+	originalScanEvents(event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+	local listeners = customCheckEvents[event]
+	if not listeners then return end
+	for uid in pairs(listeners) do rerunConditions(uid) end
+end

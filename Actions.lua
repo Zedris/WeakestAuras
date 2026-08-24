@@ -586,10 +586,14 @@ local function runInitIfNeeded(id, env)
 	end
 end
 
+-- `onlyConfig` is an environment built solely so somebody else can read its
+-- config -- a group collecting aura_env.child_envs. Running init there would run
+-- an aura's own code at a moment that aura had nothing to do with, so this is
+-- the enforcement point for the distinction AuraEnv.lua draws.
 local originalActivateAuraEnv = WA.ActivateAuraEnv
-function WA.ActivateAuraEnv(id, cloneId, state, states)
-	local env = originalActivateAuraEnv(id, cloneId, state, states)
-	if id and env then runInitIfNeeded(id, env) end
+function WA.ActivateAuraEnv(id, cloneId, state, states, onlyConfig)
+	local env = originalActivateAuraEnv(id, cloneId, state, states, onlyConfig)
+	if id and env and not onlyConfig then runInitIfNeeded(id, env) end
 	return env
 end
 

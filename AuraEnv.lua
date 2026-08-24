@@ -222,6 +222,26 @@ local environments = {}
 -- append that.
 local stack, depth = {}, 0
 
+-- Each child's own environment, in the group's child order, for a group's code
+-- to read its children's configs off `aura_env.child_envs[i].config`. The tables
+-- are the children's real environments rather than copies, so a later config
+-- write is visible here without anything rebuilding this list.
+--
+-- Reached through the config-only door and popped straight back off: this runs
+-- part-way through another aura's activation, so a child left pushed would hand
+-- the group's own code the last child's aura_env.
+local function buildChildEnvs(data)
+	local envs = {}
+	local children = data.controlledChildren or {}
+	for i = 1, table.getn(children) do
+		if WeakestAurasDB.displays[children[i]] then
+			envs[i] = WA.ActivateAuraEnv(children[i], nil, nil, nil, true)
+			WA.DeactivateAuraEnv()
+		end
+	end
+	return envs
+end
+
 -- `aura_env` is assigned straight onto the environment table rather than
 -- answered by a function __index, and that is a decision rather than a
 -- shortcut. With a table __index a global read that misses customEnv chains to
@@ -240,7 +260,7 @@ local stack, depth = {}, 0
 -- is a real function that ignores its caller's environment. So inside user code
 -- `getglobal("aura_env")` and `aura_env` disagree. Nobody spells their own
 -- variables that way, but nothing here can make them agree either.
-function WA.ActivateAuraEnv(id, cloneId, state, states)
+function WA.ActivateAuraEnv(id, cloneId, state, states, onlyConfig)
 	local env = id and environments[id]
 	local created = false
 	if not env then
@@ -254,11 +274,21 @@ function WA.ActivateAuraEnv(id, cloneId, state, states)
 	env.cloneId = cloneId
 	env.state = state
 	env.states = states
-	if created then
-		local data = id and WeakestAurasDB.displays[id]
-		if data and not WA.IsGroup(data) then
-			env.config = WA.DeepCopy(data.config)
-		end
+	local data = id and WeakestAurasDB.displays[id]
+	if created and data and not WA.IsGroup(data) then
+		env.config = WA.DeepCopy(data.config)
+	end
+	-- `onlyConfig` is an environment initialized far enough to hold a config and
+	-- no further: no children reached, and -- the load-bearing half, enforced by
+	-- Actions.lua's wrapper around this function rather than here -- no init
+	-- action run. Without it, a group's code touching child_envs would fire every
+	-- child's init at whatever moment that code first ran.
+	--
+	-- Deferred to an activation that is not itself config-only, so an environment
+	-- built the shallow way still grows its children the first time it is
+	-- activated for real.
+	if data and not onlyConfig and not env.child_envs and WA.IsGroup(data) then
+		env.child_envs = buildChildEnvs(data)
 	end
 	-- Peek, not Ensure: filling this in must not spin up a frame for an aura
 	-- nothing has drawn yet.
@@ -269,8 +299,8 @@ function WA.ActivateAuraEnv(id, cloneId, state, states)
 	return env
 end
 
-function WA.ActivateAuraEnvForRegion(region)
-	return WA.ActivateAuraEnv(region.id, region.cloneId, region.state, region.states)
+function WA.ActivateAuraEnvForRegion(region, onlyConfig)
+	return WA.ActivateAuraEnv(region.id, region.cloneId, region.state, region.states, onlyConfig)
 end
 
 function WA.DeactivateAuraEnv()
@@ -317,6 +347,10 @@ function WA.RefreshAuraEnvConfig(id)
 	if not env or not data then return end
 	if WA.IsGroup(data) then
 		env.config = nil
+		-- A group has no config of its own; what it can go stale about is which
+		-- children it has. Rebuilt rather than refreshed because the children's own
+		-- environments already share their config tables with this list.
+		if env.child_envs then env.child_envs = buildChildEnvs(data) end
 	else
 		env.config = WA.DeepCopy(data.config)
 	end

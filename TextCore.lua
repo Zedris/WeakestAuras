@@ -214,6 +214,9 @@ local function setFont(fs, path, size, flags)
 	else
 		fs.waTextHeight = nil
 	end
+	-- A font or size change must reach the next SetText below even when the
+	-- string itself is unchanged -- the scaled-size re-assert rides that call.
+	fs.waLastText = nil
 	return true
 end
 
@@ -256,6 +259,11 @@ end
 -- leaving the previous one at least keeps something on screen.
 function textCore.SetText(fs, str)
 	if not fs:GetFont() then return false end
+	-- A countdown formatted to whole seconds hands over the same string dozens
+	-- of frames in a row; re-rendering it is pure engine layout cost. setFont
+	-- clears the cache, so a font/size change still reaches the calls below.
+	if fs.waLastText == str then return true end
+	fs.waLastText = str
 	fs:SetText(str)
 	-- Only a string scaled past the size ceiling carries one, and only that string
 	-- pays for the second call.
