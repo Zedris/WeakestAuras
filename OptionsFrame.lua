@@ -1906,7 +1906,7 @@ local function conditionOptionsCore(fields, members)
 		elseif ptype == "number" and pentry.min and (pentry.max or pentry.softMax) then
 			table.insert(out, dress({
 				type = "range", name = "Value", half = true, min = pentry.min, max = pentry.max,
-				softMax = pentry.softMax, step = pentry.step or 1,
+				softMin = pentry.softMin, softMax = pentry.softMax, step = pentry.step or 1,
 				get = function() if valDiff then return nil end return change.value end,
 				set = function(v) fanChangeValue(cond, change, v) end,
 			}, "Value"))

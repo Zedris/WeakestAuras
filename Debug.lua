@@ -1,6 +1,7 @@
 -- WeakestAuras -- in-game probes and verification commands for the runtime
 -- engine. Registers /wa probe, soundprobe, states, libs, addons, gen, load,
--- conditions, codeprobe, textprobe, texprobe, levelprobe, plateprobe, wa2probe,
+-- conditions, codeprobe, textprobe, csprobe, texprobe, levelprobe, plateprobe,
+-- wa2probe,
 -- wa2, and cdtest.
 
 if WeakestAuras.disabled then return end
@@ -3546,6 +3547,162 @@ function D.TextProbe()
 	D.Log("--- end textprobe ---")
 end
 
+-- /wa csprobe -- whether a ColorSelect built at runtime is a working colour
+-- wheel, which decides whether our own picker can host the engine's wheel or
+-- has to draw an HSV area out of gradients instead.
+--
+-- ColorPickerFrame is a <ColorSelect> declaring its wheel and value textures as
+-- child elements with no file of their own (design/client/ColorPickerFrame.xml),
+-- so the art is engine-drawn and the only question is how a frame with no XML
+-- hands those textures over. The setter may want a Texture object or a path,
+-- and either may be absent here -- the 3.3.5 list is not evidence for this
+-- client.
+--
+-- The reported half is machine-checkable; the wheel *drawing* is not, so the
+-- probe leaves its frame on screen. Two things need an eye: whether a wheel
+-- appears where the outline is, and whether dragging on it moves the preview.
+local csProbeFrame
+
+function D.ColorSelectProbe()
+	D.Log("--- csprobe ---")
+
+	local ok, cs = pcall(CreateFrame, "ColorSelect", nil, UIParent)
+	if not ok or not cs then
+		D.Log("  CreateFrame(\"ColorSelect\") FAILED: " .. tostring(cs))
+		D.Log("  Our own picker cannot host an engine wheel; gradients it is.")
+		D.Log("--- end csprobe ---")
+		return
+	end
+	D.Log("  CreateFrame(\"ColorSelect\") = ok")
+
+	-- Read off the instance rather than the metatable: __index may be a function
+	-- here, and a direct type() test answers the same question either way.
+	local names = {
+		"SetColorRGB", "GetColorRGB", "SetColorHSV", "GetColorHSV",
+		"SetColorWheelTexture", "GetColorWheelTexture",
+		"SetColorWheelThumbTexture", "GetColorWheelThumbTexture",
+		"SetColorValueTexture", "GetColorValueTexture",
+		"SetColorValueThumbTexture", "GetColorValueThumbTexture",
+	}
+	local present, absent = {}, {}
+	for i = 1, table.getn(names) do
+		local n = names[i]
+		if type(cs[n]) == "function" then table.insert(present, n) else table.insert(absent, n) end
+	end
+	D.Log("  present: " .. (table.getn(present) > 0 and table.concat(present, ", ") or "(none)"))
+	D.Log("  ABSENT:  " .. (table.getn(absent) > 0 and table.concat(absent, ", ") or "(none)"))
+
+	if not csProbeFrame then
+		csProbeFrame = CreateFrame("Frame", nil, UIParent)
+		csProbeFrame:SetWidth(260); csProbeFrame:SetHeight(210)
+		csProbeFrame:SetPoint("CENTER", 220, 0)
+		csProbeFrame:SetBackdrop({
+			bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+			edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+			tile = true, tileSize = 32, edgeSize = 32,
+			insets = { left = 11, right = 12, top = 12, bottom = 11 },
+		})
+		csProbeFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+		csProbeFrame:EnableMouse(true)
+		csProbeFrame:SetMovable(true)
+		csProbeFrame:RegisterForDrag("LeftButton")
+		csProbeFrame:SetScript("OnDragStart", function() this:StartMoving() end)
+		csProbeFrame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
+		local title = csProbeFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		title:SetPoint("TOP", 0, -14)
+		title:SetText("csprobe -- drag me")
+		local hint = csProbeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		hint:SetPoint("BOTTOM", 0, 16)
+		hint:SetText("wheel + bar should draw; drag them")
+		csProbeFrame.hint = hint
+	end
+	csProbeFrame:Show()
+	if csProbeFrame.cs then csProbeFrame.cs:Hide() end
+
+	cs:SetParent(csProbeFrame)
+	cs:SetWidth(184); cs:SetHeight(128)
+	cs:SetPoint("TOPLEFT", csProbeFrame, "TOPLEFT", 18, -38)
+	cs:EnableMouse(true)
+	csProbeFrame.cs = cs
+
+	-- The wheel's own art is engine-drawn, so the texture handed over is an
+	-- empty canvas; the thumbs are the one pair with a real file, cropped out of
+	-- the sheet the FrameXML crops (same TexCoords).
+	local wheelTex = cs:CreateTexture(nil, "ARTWORK")
+	wheelTex:SetWidth(128); wheelTex:SetHeight(128)
+	wheelTex:SetPoint("TOPLEFT", cs, "TOPLEFT", 0, 0)
+	local valueTex = cs:CreateTexture(nil, "ARTWORK")
+	valueTex:SetWidth(32); valueTex:SetHeight(128)
+	valueTex:SetPoint("LEFT", wheelTex, "RIGHT", 24, 0)
+	local wheelThumb = cs:CreateTexture(nil, "OVERLAY")
+	wheelThumb:SetTexture("Interface\\Buttons\\UI-ColorPicker-Buttons")
+	wheelThumb:SetWidth(10); wheelThumb:SetHeight(10)
+	wheelThumb:SetTexCoord(0, 0.15625, 0, 0.625)
+	local valueThumb = cs:CreateTexture(nil, "OVERLAY")
+	valueThumb:SetTexture("Interface\\Buttons\\UI-ColorPicker-Buttons")
+	valueThumb:SetWidth(48); valueThumb:SetHeight(14)
+	valueThumb:SetTexCoord(0.25, 1.0, 0, 0.875)
+	D.Log("  thumb art read-back = " .. tostring(wheelThumb:GetTexture()))
+
+	local function try(label, fn)
+		local passed, err = pcall(fn)
+		D.Log("  " .. label .. " = " .. (passed and "ok" or ("ERR " .. tostring(err))))
+		return passed
+	end
+	try("SetColorWheelTexture(texture)", function() cs:SetColorWheelTexture(wheelTex) end)
+	try("SetColorValueTexture(texture)", function() cs:SetColorValueTexture(valueTex) end)
+	try("SetColorWheelThumbTexture(texture)", function() cs:SetColorWheelThumbTexture(wheelThumb) end)
+	try("SetColorValueThumbTexture(texture)", function() cs:SetColorValueThumbTexture(valueThumb) end)
+	-- A setter that wanted a path instead would have thrown above and take one
+	-- here, so both shapes are asked rather than inferred from the first result.
+	local cs2 = CreateFrame("ColorSelect", nil, UIParent)
+	cs2:Hide()
+	try("SetColorWheelTexture(path)", function()
+		cs2:SetColorWheelTexture("Interface\\Buttons\\UI-ColorPicker-Buttons")
+	end)
+	if type(cs.GetColorWheelTexture) == "function" then
+		local got = cs:GetColorWheelTexture()
+		D.Log("  GetColorWheelTexture() after set = " .. tostring(got)
+			.. (got == wheelTex and "  (the one we handed it)" or ""))
+	end
+
+	local fired = 0
+	cs:SetScript("OnColorSelect", function() fired = fired + 1 end)
+	cs:SetColorRGB(0.2, 0.4, 0.8)
+	local r, g, b = cs:GetColorRGB()
+	D.Log("  SetColorRGB(.2,.4,.8) -> GetColorRGB = "
+		.. string.format("%.3f %.3f %.3f", r or -1, g or -1, b or -1))
+	D.Log("  OnColorSelect fired on a scripted set = " .. tostring(fired > 0)
+		.. " (" .. fired .. "x)")
+	if type(cs.SetColorHSV) == "function" then
+		cs:SetColorHSV(0.5, 1, 1)
+		local hr, hg, hb = cs:GetColorRGB()
+		D.Log("  SetColorHSV(.5,1,1) -> GetColorRGB = "
+			.. string.format("%.3f %.3f %.3f", hr or -1, hg or -1, hb or -1)
+			.. "  (cyan 0,1,1 means HSV drives the same colour)")
+	end
+
+	-- The live preview: whatever the wheel is dragged to lands here, which is the
+	-- only proof the engine is still driving the widget after a runtime build.
+	local preview = csProbeFrame.preview
+	if not preview then
+		preview = csProbeFrame:CreateTexture(nil, "OVERLAY")
+		preview:SetWidth(32); preview:SetHeight(32)
+		preview:SetPoint("TOPRIGHT", csProbeFrame, "TOPRIGHT", -20, -38)
+		csProbeFrame.preview = preview
+	end
+	preview:SetTexture(0.2, 0.4, 0.8, 1)
+	cs:SetScript("OnColorSelect", function()
+		preview:SetTexture(this:GetColorRGB())
+	end)
+	cs:Show()
+
+	D.Log("  A frame is on screen to the right. Report two things:")
+	D.Log("   1. does a colour WHEEL and a vertical value BAR actually draw in it?")
+	D.Log("   2. does dragging on them move the 32x32 preview square's colour?")
+	D.Log("--- end csprobe ---")
+end
+
 -- pfUI's copy, used only as a test subject: it is a vendored monospace TTF
 -- already on this client, so it answers "can SetFont load one at all" without
 -- committing to vendoring our own before the answer is known.
@@ -4538,6 +4695,8 @@ function D.HandleSlash(msg)
 		D.CodeProbe()
 	elseif cmd == "textprobe" then
 		D.TextProbe()
+	elseif cmd == "csprobe" then
+		D.ColorSelectProbe()
 	elseif cmd == "plateprobe" then
 		D.PlateProbe()
 	elseif cmd == "texprobe" then
@@ -4580,6 +4739,6 @@ function D.HandleSlash(msg)
 		ensureFrame()
 		frame:Hide()
 	else
-		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], auraprobe [unit|all], overflow [unit], timers, linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], cdtest, modeltest [id], swipetest [sizes/WxH...], swipenudge <k> [yflat], swipestress [N], edgetest [state|0], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, soundprobe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, prof [start|stop|report [n]|reset], libs, addons, export <id>, import, clear, show, hide")
+		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], auraprobe [unit|all], overflow [unit], timers, linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], cdtest, modeltest [id], swipetest [sizes/WxH...], swipenudge <k> [yflat], swipestress [N], edgetest [state|0], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, soundprobe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, csprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, prof [start|stop|report [n]|reset], libs, addons, export <id>, import, clear, show, hide")
 	end
 end

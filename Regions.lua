@@ -1715,8 +1715,8 @@ WA.RegisterRegionType("texture", {
 		color = { display = "Color", setter = "Color", type = "color" },
 		desaturate = { display = "Desaturate", setter = "SetDesaturated", type = "bool" },
 		blendMode = { display = "Blend Mode", setter = "SetBlendMode", type = "list", values = TEXTURE_BLEND_LABELS },
-		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 8, max = 512, step = 1 },
-		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 8, max = 512, step = 1 },
+		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 1, softMin = 8, softMax = 800, step = 1 },
+		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 1, softMin = 8, softMax = 800, step = 1 },
 		mirror = { display = "Mirror", setter = "SetMirror", type = "bool" },
 	}),
 	createThumbnail = function(parent)
@@ -1782,12 +1782,12 @@ WA.RegisterRegionType("texture", {
 			},
 			{ type = "header", name = "Size" },
 			{
-				type = "range", name = "Width", key = "width", min = 8, max = 512, step = 1, half = true,
+				type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.width end,
 				set = function(v) data.width = v; WA.Add(data, true) end,
 			},
 			{
-				type = "range", name = "Height", key = "height", min = 8, max = 512, step = 1, half = true,
+				type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.height end,
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			},
@@ -2029,8 +2029,8 @@ WA.RegisterRegionType("model", {
 	},
 	getSubRegionAnchors = function() return TEXTURE_SUB_ANCHORS end,
 	properties = WA.regionPrototype.AddProperties({
-		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 8, max = 512, step = 1 },
-		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 8, max = 512, step = 1 },
+		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 1, softMin = 8, softMax = 800, step = 1 },
+		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 1, softMin = 8, softMax = 800, step = 1 },
 	}),
 	-- Upstream's list thumbnail: a quickslot border with a live miniature of
 	-- the aura's own model. The model frame is created once with the pooled
@@ -2187,12 +2187,12 @@ WA.RegisterRegionType("model", {
 		end
 		table.insert(fields, { type = "header", name = "Size" })
 		table.insert(fields, {
-			type = "range", name = "Width", key = "width", min = 8, max = 512, step = 1, half = true,
+			type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 			get = function() return data.width end,
 			set = function(v) data.width = v; WA.Add(data, true) end,
 		})
 		table.insert(fields, {
-			type = "range", name = "Height", key = "height", min = 8, max = 512, step = 1, half = true,
+			type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 			get = function() return data.height end,
 			set = function(v) data.height = v; WA.Add(data, true) end,
 		})
@@ -2391,8 +2391,8 @@ WA.RegisterRegionType("icon", {
 	-- The overridable-property registry conditions and their editor read
 	-- Setter names a region method defined in modify below.
 	properties = WA.regionPrototype.AddProgressProperties(WA.regionPrototype.AddProperties({
-		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 8, max = 128, step = 1 },
-		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 8, max = 128, step = 1 },
+		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 1, softMin = 8, softMax = 256, step = 1 },
+		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 1, softMin = 8, softMax = 256, step = 1 },
 		desaturate = { display = "Desaturate", setter = "SetDesaturated", type = "bool" },
 		color = { display = "Color", setter = "Color", type = "color" },
 		zoom = { display = "Zoom", setter = "SetZoom", type = "number", min = 0, max = 1, step = 0.05 },
@@ -2461,12 +2461,12 @@ WA.RegisterRegionType("icon", {
 			},
 			{ type = "header", name = "Size" },
 			{
-				type = "range", name = "Width", key = "width", min = 8, max = 128, step = 1, half = true,
+				type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 256, step = 1, half = true,
 				get = function() return data.width end,
 				set = function(v) data.width = v; WA.Add(data, true) end,
 			},
 			{
-				type = "range", name = "Height", key = "height", min = 8, max = 128, step = 1, half = true,
+				type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 256, step = 1, half = true,
 				get = function() return data.height end,
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			},
@@ -3211,8 +3211,8 @@ WA.RegisterRegionType("progressbar", {
 		-- Both axes share one upper bound: a VERTICAL bar is a tall narrow region,
 		-- so a height capped near a horizontal bar's thickness would make that
 		-- orientation unbuildable from the options tab.
-		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 8, max = 400, step = 1 },
-		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 1, max = 400, step = 1 },
+		width = { display = "Width", setter = "SetRegionWidth", type = "number", min = 1, softMin = 8, softMax = 800, step = 1 },
+		height = { display = "Height", setter = "SetRegionHeight", type = "number", min = 1, softMax = 800, step = 1 },
 		texture = { display = "Bar Texture", setter = "SetBarTexture", type = "list", values = BAR_TEXTURE_LABELS },
 		textureSource = { display = "Texture Source", setter = "SetBarTextureSource", type = "list", values = { LSM = "Bundled", Picker = "Custom path" } },
 		textureInput = { display = "Texture Path", setter = "SetBarTextureInput", type = "string" },
@@ -3508,12 +3508,12 @@ WA.RegisterRegionType("progressbar", {
 		local sizeFields = {
 			{ type = "header", name = "Size" },
 			{
-				type = "range", name = "Width", key = "width", min = 8, max = 400, step = 1, half = true,
+				type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.width end,
 				set = function(v) data.width = v; WA.Add(data, true) end,
 			},
 			{
-				type = "range", name = "Height", key = "height", min = 1, max = 400, step = 1, half = true,
+				type = "range", name = "Height", key = "height", min = 1, softMax = 800, step = 1, half = true,
 				get = function() return data.height end,
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			},
@@ -4401,8 +4401,8 @@ WA.RegisterRegionType("progresstexture", {
 			{ type = "range", name = "Re-center X", key = "user_x", min = -0.5, max = 0.5, step = 0.01, half = true, get = function() return data.user_x end, set = function(v) data.user_x = v; WA.Add(data, true) end },
 			{ type = "range", name = "Re-center Y", key = "user_y", min = -0.5, max = 0.5, step = 0.01, half = true, get = function() return data.user_y end, set = function(v) data.user_y = v; WA.Add(data, true) end },
 			{ type = "header", name = "Size" },
-			{ type = "range", name = "Width", key = "width", min = 8, max = 512, step = 1, half = true, get = function() return data.width end, set = function(v) data.width = v; WA.Add(data, true) end },
-			{ type = "range", name = "Height", key = "height", min = 8, max = 512, step = 1, half = true, get = function() return data.height end, set = function(v) data.height = v; WA.Add(data, true) end },
+			{ type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true, get = function() return data.width end, set = function(v) data.width = v; WA.Add(data, true) end },
+			{ type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 800, step = 1, half = true, get = function() return data.height end, set = function(v) data.height = v; WA.Add(data, true) end },
 		}
 		-- The arc the fill sweeps, which only a circular orientation has; it
 		-- belongs beside the orientation that introduced it, not at the tail.
@@ -4705,12 +4705,12 @@ WA.RegisterRegionType("text", {
 		})
 		if data.automaticWidth == "Fixed" then
 			table.insert(fields, {
-				type = "range", name = "Width", key = "width", min = 8, max = 400, step = 1, half = true,
+				type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.width end,
 				set = function(v) data.width = v; WA.Add(data, true) end,
 			})
 			table.insert(fields, {
-				type = "range", name = "Height", key = "height", min = 8, max = 400, step = 1, half = true,
+				type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.height end,
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			})
@@ -4786,12 +4786,12 @@ WA.RegisterRegionType("empty", {
 			},
 			{ type = "header", name = "Size" },
 			{
-				type = "range", name = "Width", key = "width", min = 8, max = 512, step = 1, half = true,
+				type = "range", name = "Width", key = "width", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.width end,
 				set = function(v) data.width = v; WA.Add(data, true) end,
 			},
 			{
-				type = "range", name = "Height", key = "height", min = 8, max = 512, step = 1, half = true,
+				type = "range", name = "Height", key = "height", min = 1, softMin = 8, softMax = 800, step = 1, half = true,
 				get = function() return data.height end,
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			},

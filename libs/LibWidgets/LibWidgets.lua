@@ -119,15 +119,40 @@
 -- Returns the CheckButton with a `.label` FontString and a `.setChecked(on)` method
 -- that resyncs from external state without firing onClick.
 --
--- NewColorSwatch(parent, spec) -- a swatch button that opens the stock
--- ColorPickerFrame (with opacity). Shift-Click copies the swatch's colour to
+-- NewColorSwatch(parent, spec) -- a swatch button that opens this library's
+-- colour picker (see GetColorPicker). Shift-Click copies the swatch's colour to
 -- the library-wide colour clipboard, Ctrl-Click pastes it; a hover tooltip
 -- carries the current colour and both hints. spec:
 --   get() -> {r,g,b,a}   -- current colour (a defaults to 1 if absent)
 --   set({r,g,b,a})       -- store a picked colour
 --   width/height (default 20), swatchSize (inner fill, default 14)
+--   hasOpacity           -- optional: false hides the alpha slider and forces 1
+--   title                -- optional: the picker's caption while this field owns it
+-- `set` is called on every change while the picker is open, not only on Okay, so
+-- the change is visible on whatever the colour is actually on; Cancel and Escape
+-- call it again with the colour the picker opened with.
 -- Returns the button with a `.repaint()` method to re-read get() after an
 -- external change.
+--
+-- GetColorPicker() -- the picker dialog, built on first use and reused. Its own
+-- frame rather than the stock ColorPickerFrame, which is shared with every other
+-- addon and cannot be extended without fighting a layout UI skins re-arrange.
+-- The wheel and value bar are still the engine's (a runtime-built ColorSelect);
+-- alongside them sit an alpha slider, old/new wells, a typeable hex box and the
+-- clipboard's Copy/Paste. Nothing here needs spec.textureDir -- every texture it
+-- draws is a client path out of the base interface archive.
+--   picker.Open(spec)    -- spec: r, g, b, a, hasOpacity, title,
+--                           onChange(c)   -- every change while open
+--                           onAccept(c)   -- Okay
+--                           onCancel(c)   -- Cancel or Escape, c being the
+--                                            colour Open was given
+--   picker.Close() / picker.IsOpen() / picker.GetColor()
+-- The hex box reads `#RRGGBB`, or `#RRGGBBAA` where the colour is translucent,
+-- and takes either back (with or without the `#`/`0x`, in any case); six digits
+-- leave the picker's own alpha alone. Anything else is discarded and the box
+-- repaints from the picker. Clicking the Old well returns to the opening colour
+-- without closing. `.hexBox`/`.copyButton`/`.pasteButton`/`.alphaSlider`/
+-- `.okayButton`/`.cancelButton`/`.oldWell`/`.colorSelect`/`.frame` are the parts.
 --
 -- GetColorClipboard() / SetColorClipboard(c) -- the {r,g,b,a} every swatch
 -- copies to and pastes from, for a consumer wanting its own copy/paste
@@ -370,7 +395,7 @@
 -- Returns { height = <total pixel height used below (x,y)>, refresh = fn,
 --           frame = <the list's outer frame> }.
 
-local MAJOR, MINOR = "LibWidgets-1.0", 23
+local MAJOR, MINOR = "LibWidgets-1.0", 25
 -- Bind the global only on the winning copy. NewLibrary returns nil for a copy
 -- that loses the version race; assigning that nil straight to the global would
 -- wipe out the winner's binding (an older/equal copy loading last nulls it),
@@ -967,6 +992,383 @@ local function colorLabel(c)
 	return colorHex(c) .. "  " .. math.floor(a * 100 + 0.5) .. "%"
 end
 
+-- What the hex box shows. The alpha pair appears only on a translucent colour,
+-- for the same reason colorLabel omits it -- but here it also has to round-trip,
+-- so it is the raw byte rather than the percentage read above.
+local function colorHexBytes(c)
+	local a = c[4] or 1
+	if a >= 1 then return colorHex(c) end
+	return colorHex(c) .. string.format("%02X", math.floor(a * 255 + 0.5))
+end
+
+-- Hex is how a colour travels between a website, a theme and another addon's
+-- config, so the box takes the shapes those hand out: an optional "#" or "0x",
+-- then RRGGBB, or RRGGBBAA where the source carries alpha. Six digits leave
+-- `keepAlpha` in place instead of forcing the colour opaque -- retyping a tint
+-- on a half-transparent fill must not silently solidify it. nil for anything
+-- that is not one of those two lengths, or carries a non-hex character.
+local function hexToColor(s, keepAlpha)
+	if not s then return nil end
+	s = string.gsub(s, "%s", "")
+	s = string.gsub(s, "^#", "")
+	s = string.gsub(s, "^0[xX]", "")
+	local n = string.len(s)
+	if n ~= 6 and n ~= 8 then return nil end
+	if string.find(s, "[^0-9a-fA-F]") then return nil end
+	local function at(i) return tonumber(string.sub(s, i, i + 1), 16) / 255 end
+	if n == 8 then return { at(1), at(3), at(5), at(7) } end
+	return { at(1), at(3), at(5), keepAlpha or 1 }
+end
+
+local HEX_BOX_W, COPY_BTN_W, PASTE_BTN_W = 78, 38, 42
+
+-- ---------------------------------------------------------------------------
+-- The colour picker.
+--
+-- Our own dialog rather than the stock ColorPickerFrame. That frame is shared
+-- with every addon on the client, so extending it means either claiming a
+-- rectangle inside a layout UI skins re-arrange or hanging a shelf off its
+-- edge, and neither survives contact. Owning the dialog also means the hex box
+-- and the clipboard are first-class controls instead of an appendix.
+--
+-- The *wheel* is still the engine's. `ColorSelect` is creatable at runtime here
+-- and its four texture setters take a Texture object -- a path throws
+-- `Usage: SetColorWheelTexture(texture or nil)` -- so a frame built with no XML
+-- gets the same engine-drawn wheel and value bar that FrameXML declares as
+-- child elements. Only the two thumbs carry a real file, cropped out of one
+-- sheet the way FrameXML crops it.
+--
+-- `SetColorHSV` takes its hue in DEGREES, not the 0..1 the RGB pair uses:
+-- SetColorHSV(0.5, 1, 1) lands on red, not cyan. Nothing here calls it; the
+-- note is for whoever reaches for it next.
+--
+-- Alpha is a slider of our own, since OpacitySliderFrame belongs to the stock
+-- picker. It carries alpha directly rather than the stock's 1-alpha, so there
+-- is no inversion anywhere in this file.
+-- ---------------------------------------------------------------------------
+
+local CP_WHEEL_SIZE  = 128
+local CP_VALUE_W     = 32
+local CP_ALPHA_W     = 16
+local CP_PREVIEW_W   = 60
+local CP_PREVIEW_H   = 30
+local CP_PAD         = 14
+
+-- Client art, all out of the base interface archive: a consumer supplies no
+-- textureDir for this widget (see the no-self-path note in the header).
+local CP_THUMBS      = "Interface\\Buttons\\UI-ColorPicker-Buttons"
+local CP_SLIDER_BG   = "Interface\\Buttons\\UI-SliderBar-Background"
+local CP_SLIDER_EDGE = "Interface\\Buttons\\UI-SliderBar-Border"
+local CP_SLIDER_THUMB = "Interface\\Buttons\\UI-SliderBar-Button-Vertical"
+local CP_DIALOG_BG   = "Interface\\DialogFrame\\UI-DialogBox-Background"
+local CP_DIALOG_EDGE = "Interface\\DialogFrame\\UI-DialogBox-Border"
+
+local colorPicker
+
+local function buildColorPicker()
+	local f = CreateFrame("Frame", nil, UIParent)
+	local wheelRowH = CP_WHEEL_SIZE
+	local contentTop = -38
+	local hexY = contentTop - wheelRowH - 20
+	local buttonY = hexY - 32
+	f:SetWidth(CP_PAD * 2 + CP_WHEEL_SIZE + 20 + CP_VALUE_W + 18 + CP_ALPHA_W + 26 + CP_PREVIEW_W)
+	f:SetHeight(-buttonY + 24 + CP_PAD)
+	f:SetPoint("CENTER", 0, 0)
+	f:SetBackdrop({
+		bgFile = CP_DIALOG_BG, edgeFile = CP_DIALOG_EDGE, tile = true,
+		tileSize = 32, edgeSize = 32,
+		insets = { left = 11, right = 12, top = 12, bottom = 11 },
+	})
+	f:SetFrameStrata("FULLSCREEN_DIALOG")
+	f:SetToplevel(true)
+	f:EnableMouse(true)
+	f:SetMovable(true)
+	f:RegisterForDrag("LeftButton")
+	f:SetScript("OnDragStart", function() this:StartMoving() end)
+	f:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
+	f:Hide()
+
+	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	title:SetPoint("TOP", 0, -16)
+	title:SetText("Color Picker")
+
+	-- State. `cur` is what the dialog is showing; `opened` is what it was handed,
+	-- which Cancel and Escape put back.
+	local cur = { 1, 1, 1, 1 }
+	local opened = { 1, 1, 1, 1 }
+	local spec = {}
+	local refresh, applyColor
+	-- Every control writes through applyColor, and applyColor writes back to the
+	-- controls. Without this the wheel's OnColorSelect would re-enter through the
+	-- SetColorRGB that refresh issues, and the alpha slider likewise.
+	local syncing = false
+
+	-- The engine's wheel. Sized to hold the wheel and the value bar side by side,
+	-- since both textures anchor inside it.
+	local cs = CreateFrame("ColorSelect", nil, f)
+	cs:SetWidth(CP_WHEEL_SIZE + 20 + CP_VALUE_W)
+	cs:SetHeight(CP_WHEEL_SIZE)
+	cs:SetPoint("TOPLEFT", CP_PAD, contentTop)
+	cs:EnableMouse(true)
+
+	local wheelTex = cs:CreateTexture(nil, "ARTWORK")
+	wheelTex:SetWidth(CP_WHEEL_SIZE); wheelTex:SetHeight(CP_WHEEL_SIZE)
+	wheelTex:SetPoint("TOPLEFT", cs, "TOPLEFT", 0, 0)
+	local valueTex = cs:CreateTexture(nil, "ARTWORK")
+	valueTex:SetWidth(CP_VALUE_W); valueTex:SetHeight(CP_WHEEL_SIZE)
+	valueTex:SetPoint("LEFT", wheelTex, "RIGHT", 20, 0)
+	-- The thumbs are two crops of one sheet, the same rects FrameXML takes.
+	local wheelThumb = cs:CreateTexture(nil, "OVERLAY")
+	wheelThumb:SetTexture(CP_THUMBS)
+	wheelThumb:SetWidth(10); wheelThumb:SetHeight(10)
+	wheelThumb:SetTexCoord(0, 0.15625, 0, 0.625)
+	local valueThumb = cs:CreateTexture(nil, "OVERLAY")
+	valueThumb:SetTexture(CP_THUMBS)
+	valueThumb:SetWidth(48); valueThumb:SetHeight(14)
+	valueThumb:SetTexCoord(0.25, 1.0, 0, 0.875)
+	cs:SetColorWheelTexture(wheelTex)
+	cs:SetColorValueTexture(valueTex)
+	cs:SetColorWheelThumbTexture(wheelThumb)
+	cs:SetColorValueThumbTexture(valueThumb)
+
+	local alphaX = CP_PAD + CP_WHEEL_SIZE + 20 + CP_VALUE_W + 18
+	local alphaLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	alphaLabel:SetPoint("BOTTOMLEFT", f, "TOPLEFT", alphaX - 6, contentTop + 2)
+	alphaLabel:SetText("Alpha")
+
+	local alpha = CreateFrame("Slider", nil, f)
+	alpha:SetOrientation("VERTICAL")
+	alpha:SetWidth(CP_ALPHA_W); alpha:SetHeight(CP_WHEEL_SIZE)
+	alpha:SetPoint("TOPLEFT", alphaX, contentTop)
+	alpha:SetMinMaxValues(0, 1)
+	alpha:SetValueStep(0.01)
+	alpha:SetBackdrop({
+		bgFile = CP_SLIDER_BG, edgeFile = CP_SLIDER_EDGE, tile = true,
+		tileSize = 8, edgeSize = 8,
+		insets = { left = 3, right = 3, top = 6, bottom = 6 },
+	})
+	local aThumb = alpha:CreateTexture(nil, "OVERLAY")
+	aThumb:SetTexture(CP_SLIDER_THUMB)
+	aThumb:SetWidth(32); aThumb:SetHeight(32)
+	alpha:SetThumbTexture(aThumb)
+	alpha:SetValue(1)
+
+	local alphaText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	alphaText:SetPoint("TOP", alpha, "BOTTOM", 0, -4)
+	alphaText:SetText("100%")
+
+	-- Old above new, so a colour is judged against the one it replaces.
+	local previewX = alphaX + CP_ALPHA_W + 26
+	local oldLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	oldLabel:SetPoint("TOPLEFT", previewX, contentTop)
+	oldLabel:SetText("Old")
+	local oldWell = CreateFrame("Button", nil, f)
+	oldWell:SetWidth(CP_PREVIEW_W); oldWell:SetHeight(CP_PREVIEW_H)
+	oldWell:SetPoint("TOPLEFT", previewX, contentTop - 14)
+	oldWell:SetBackdrop(WIDGET_BACKDROP)
+	oldWell:SetBackdropColor(0, 0, 0, 1)
+	oldWell:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+	local oldTex = oldWell:CreateTexture(nil, "OVERLAY")
+	oldTex:SetPoint("CENTER", 0, 0)
+	oldTex:SetWidth(CP_PREVIEW_W - 6); oldTex:SetHeight(CP_PREVIEW_H - 6)
+
+	local newLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	newLabel:SetPoint("TOPLEFT", previewX, contentTop - 52)
+	newLabel:SetText("New")
+	local newWell = CreateFrame("Frame", nil, f)
+	newWell:SetWidth(CP_PREVIEW_W); newWell:SetHeight(CP_PREVIEW_H)
+	newWell:SetPoint("TOPLEFT", previewX, contentTop - 66)
+	newWell:SetBackdrop(WIDGET_BACKDROP)
+	newWell:SetBackdropColor(0, 0, 0, 1)
+	newWell:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+	local newTex = newWell:CreateTexture(nil, "OVERLAY")
+	newTex:SetPoint("CENTER", 0, 0)
+	newTex:SetWidth(CP_PREVIEW_W - 6); newTex:SetHeight(CP_PREVIEW_H - 6)
+
+	local hexLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	hexLabel:SetText("Hex")
+
+	local pasteBtn
+	local hexBox = LibWidgets.NewTextBox(f, {
+		width = HEX_BOX_W, height = 20, hint = "#RRGGBB",
+		onCommit = function(text)
+			local c = hexToColor(text, cur[4])
+			-- A value that is not a colour is discarded rather than guessed at;
+			-- refresh puts the dialog's own reading back, so the box can never be
+			-- left showing something the wheel disagrees with.
+			if c then applyColor(c) else refresh() end
+		end,
+	})
+	hexBox:SetPoint("TOPLEFT", CP_PAD + 30, hexY)
+	-- Hung off the box rather than placed on the row: a FontString positioned by
+	-- its own corner sits wherever the font's ascent puts it, which is what a
+	-- hand-tuned offset here was compensating for and getting wrong.
+	hexLabel:SetPoint("RIGHT", hexBox, "LEFT", -8, 0)
+
+	local copyBtn = LibWidgets.NewButton(f, {
+		text = "Copy", width = COPY_BTN_W, height = 20,
+		onClick = function()
+			LibWidgets.SetColorClipboard(cur)
+			refresh()
+		end,
+	})
+	copyBtn:SetPoint("LEFT", hexBox, "RIGHT", 8, 0)
+	pasteBtn = LibWidgets.NewButton(f, {
+		text = "Paste", width = PASTE_BTN_W, height = 20,
+		onClick = function()
+			local c = LibWidgets.GetColorClipboard()
+			if c then applyColor(c) end
+		end,
+	})
+	pasteBtn:SetPoint("LEFT", copyBtn, "RIGHT", 6, 0)
+
+	-- styleFlatButton owns OnEnter/OnLeave for the hover border, so a tooltip has
+	-- to carry that colour change with it rather than replace the handler.
+	local function tipButton(btn, tline)
+		btn:SetScript("OnEnter", function()
+			this:SetBackdropBorderColor(0.9, 0.8, 0.2, 1)
+			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+			GameTooltip:AddLine(tline(), 1, 1, 1)
+			GameTooltip:Show()
+		end)
+		btn:SetScript("OnLeave", function()
+			this:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
+			GameTooltip:Hide()
+		end)
+	end
+	tipButton(copyBtn, function() return "Copy " .. colorLabel(cur) end)
+	tipButton(pasteBtn, function()
+		local cb = colorClipboard
+		if cb then return "Paste " .. colorLabel(cb) end
+		return "Nothing copied"
+	end)
+
+	-- Clicking the old well is the undo nobody has to read about: it puts back
+	-- what the dialog opened with, without closing it.
+	oldWell:SetScript("OnClick", function()
+		applyColor({ opened[1], opened[2], opened[3], opened[4] })
+	end)
+	oldWell:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:AddLine("The colour this opened with", 1, 1, 1)
+		GameTooltip:AddLine("Click to go back to it", 0.6, 0.6, 0.6)
+		GameTooltip:Show()
+	end)
+	oldWell:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+	local close
+	local okBtn = LibWidgets.NewButton(f, {
+		text = "Okay", width = 80, height = 22,
+		onClick = function()
+			local c = { cur[1], cur[2], cur[3], cur[4] }
+			close()
+			if spec.onAccept then spec.onAccept(c) end
+		end,
+	})
+	okBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -CP_PAD - 88, CP_PAD)
+	local cancelBtn = LibWidgets.NewButton(f, {
+		text = "Cancel", width = 80, height = 22,
+		onClick = function()
+			local c = { opened[1], opened[2], opened[3], opened[4] }
+			close()
+			if spec.onCancel then spec.onCancel(c) end
+		end,
+	})
+	cancelBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -CP_PAD, CP_PAD)
+
+	refresh = function()
+		syncing = true
+		local r, g, b, a = cur[1] or 1, cur[2] or 1, cur[3] or 1, cur[4] or 1
+		newTex:SetTexture(r, g, b, a)
+		oldTex:SetTexture(opened[1] or 1, opened[2] or 1, opened[3] or 1, opened[4] or 1)
+		hexBox:SetText(colorHexBytes(cur))
+		alphaText:SetText(math.floor(a * 100 + 0.5) .. "%")
+		if alpha:GetValue() ~= a then alpha:SetValue(a) end
+		local wr, wg, wb = cs:GetColorRGB()
+		if wr ~= r or wg ~= g or wb ~= b then cs:SetColorRGB(r, g, b) end
+		if colorClipboard then
+			pasteBtn:Enable(); pasteBtn.label:SetTextColor(1, 1, 1)
+		else
+			pasteBtn:Disable(); pasteBtn.label:SetTextColor(0.45, 0.45, 0.45)
+		end
+		syncing = false
+	end
+
+	applyColor = function(c)
+		cur[1], cur[2], cur[3] = c[1] or 1, c[2] or 1, c[3] or 1
+		cur[4] = c[4] or 1
+		if not spec.hasOpacity then cur[4] = 1 end
+		refresh()
+		if spec.onChange then spec.onChange({ cur[1], cur[2], cur[3], cur[4] }) end
+	end
+
+	cs:SetScript("OnColorSelect", function()
+		if syncing then return end
+		local r, g, b = this:GetColorRGB()
+		applyColor({ r, g, b, cur[4] })
+	end)
+	alpha:SetScript("OnValueChanged", function()
+		if syncing then return end
+		applyColor({ cur[1], cur[2], cur[3], this:GetValue() })
+	end)
+
+	-- Matches the stock picker's own Escape handling, which is muscle memory.
+	f:EnableKeyboard(true)
+	f:SetScript("OnKeyDown", function()
+		if arg1 == "ESCAPE" then
+			local c = { opened[1], opened[2], opened[3], opened[4] }
+			close()
+			if spec.onCancel then spec.onCancel(c) end
+		end
+	end)
+
+	close = function()
+		LibWidgets.ClearFocus()
+		f:Hide()
+	end
+
+	local picker = { frame = f, colorSelect = cs, hexBox = hexBox, alphaSlider = alpha,
+		copyButton = copyBtn, pasteButton = pasteBtn, okayButton = okBtn,
+		cancelButton = cancelBtn, oldWell = oldWell }
+
+	function picker.Open(s)
+		s = s or {}
+		spec = s
+		opened[1], opened[2], opened[3] = s.r or 1, s.g or 1, s.b or 1
+		opened[4] = s.hasOpacity and (s.a or 1) or 1
+		cur[1], cur[2], cur[3], cur[4] = opened[1], opened[2], opened[3], opened[4]
+		if s.hasOpacity then alpha:Show(); alphaLabel:Show(); alphaText:Show()
+		else alpha:Hide(); alphaLabel:Hide(); alphaText:Hide() end
+		title:SetText(s.title or "Color Picker")
+		LibWidgets.CloseAllMenus()
+		f:Show()
+		f:Raise()
+		-- After Show: the wheel does not take a colour while hidden, so seeding
+		-- first would leave the thumb parked wherever the previous session left it.
+		syncing = true
+		cs:SetColorRGB(cur[1], cur[2], cur[3])
+		syncing = false
+		refresh()
+	end
+
+	function picker.Close() close() end
+	function picker.IsOpen() return f:IsShown() and true or false end
+	function picker.GetColor() return { cur[1], cur[2], cur[3], cur[4] } end
+	-- The internals a driver needs: the wheel and the slider cannot be moved by a
+	-- headless test, so the code they run is reached directly instead.
+	picker.applyColor = function(c) applyColor(c) end
+
+	colorPicker = picker
+	return picker
+end
+
+-- The colour picker dialog, built on first use and reused. See the header
+-- comment for the Open spec.
+function LibWidgets.GetColorPicker()
+	if colorPicker then return colorPicker end
+	return buildColorPicker()
+end
+
 -- A colour swatch opening the stock ColorPickerFrame; see the header comment
 -- for spec. OpacitySliderFrame reports 1-alpha, hence the inversions.
 function LibWidgets.NewColorSwatch(parent, spec)
@@ -992,9 +1394,10 @@ function LibWidgets.NewColorSwatch(parent, spec)
 	paint()
 	b.repaint = paint
 
-	-- The copy/paste hints have nowhere else to live -- the swatch has no room
-	-- for a label of its own and the field's caption belongs to the consumer --
-	-- so the tooltip is the whole of their discoverability.
+	-- The modifier-click hints have nowhere else to live -- the swatch has no
+	-- room for a label of its own and the field's caption belongs to the
+	-- consumer -- so the tooltip is the whole of their discoverability. The
+	-- picker's own tray is the discoverable route.
 	local hovered = false
 	local function showTip()
 		GameTooltip:SetOwner(b, "ANCHOR_RIGHT")
@@ -1031,19 +1434,16 @@ function LibWidgets.NewColorSwatch(parent, spec)
 			return
 		end
 		local c = get() or { 1, 1, 1, 1 }
-		local cr, cg, cbl, ca = c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1
-		ColorPickerFrame.func = function()
-			local r, g, bl = ColorPickerFrame:GetColorRGB()
-			local a = OpacitySliderFrame and (1 - OpacitySliderFrame:GetValue()) or 1
-			set({ r, g, bl, a }); paint()
-		end
-		ColorPickerFrame.opacityFunc = ColorPickerFrame.func
-		ColorPickerFrame.cancelFunc = function() set({ cr, cg, cbl, ca }); paint() end
-		ColorPickerFrame.opacity = 1 - ca
-		ColorPickerFrame.hasOpacity = 1
-		ColorPickerFrame:SetColorRGB(cr, cg, cbl)
-		ColorPickerFrame:SetFrameStrata("DIALOG")
-		ShowUIPanel(ColorPickerFrame)
+		-- Written on every change rather than only on Okay, so a colour is judged
+		-- against the aura it is on. Cancel and Escape hand back the colour the
+		-- dialog opened with, which puts the field back the same way.
+		LibWidgets.GetColorPicker().Open({
+			r = c[1] or 1, g = c[2] or 1, b = c[3] or 1, a = c[4] or 1,
+			hasOpacity = spec.hasOpacity ~= false,
+			title = spec.title,
+			onChange = function(nc) set(nc); paint() end,
+			onCancel = function(nc) set(nc); paint() end,
+		})
 	end)
 	return b
 end
