@@ -574,6 +574,14 @@ local function migrateSchemaV7(data)
 	end
 end
 
+-- The stance load constraint was a bare bar position with an on/off gate; it
+-- takes the multi-select tier, where the position it held is the "one of" value.
+local function migrateSchemaV8(data)
+	local L = data.load
+	if type(L) ~= "table" then return end
+	WA.MultiSelectMigrateGate(L, "stance")
+end
+
 -- A sub-region imported from upstream before the combined anchor was split
 -- carries the anchored part where a bare point belongs ("OUTER_TOPLEFT"), which
 -- SetPoint rejects outright.
@@ -624,7 +632,7 @@ end
 -- together: a new migration adds a gate and bumps this in the same change.
 -- Data that is current-schema by construction rather than by migration
 -- (WA2Translate's output) is stamped with it directly.
-WA.SCHEMA_VERSION = 7
+WA.SCHEMA_VERSION = 8
 
 -- Fills in missing fields from the aura's regionType/trigger.type defaults, and
 -- migrates saved data through the local schema versions (upstream's `triggers`
@@ -762,6 +770,11 @@ function WA.MergeDefaults(data)
 	if data.internalVersion < 7 then
 		migrateSchemaV7(data)
 		data.internalVersion = 7
+	end
+
+	if data.internalVersion < 8 then
+		migrateSchemaV8(data)
+		data.internalVersion = 8
 	end
 end
 

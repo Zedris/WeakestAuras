@@ -2232,9 +2232,13 @@ function S.appendLoadOptions(fields, data)
 				local _, playerClass = UnitClass("player")
 				seed = playerClass or seed
 			end
+			-- A per-character domain (the shapeshift bar) is walked at paint time,
+			-- so a form learned since the window opened is in the list.
+			local values, labels = arg.values, arg.labels
+			if arg.valuesFunc then values, labels = arg.valuesFunc() end
 			WA.MultiSelectFields(fields, {
 				config = L, name = arg.name, display = arg.display,
-				values = arg.values, labels = arg.labels, default = seed,
+				values = values, labels = labels, default = seed,
 				onChange = function(repaint)
 					WA.Add(data)
 					if repaint then S.refreshTabContent() end

@@ -209,7 +209,7 @@ local GENERIC_VARIABLE_NAMES = {
 	-- so they name its `power` variable rather than ours.
 	combopoints = { power = "comboPoints", percentpower = "percentComboPoints",
 		deficit = "comboPointDeficit" },
-	charstats = { attackpower = "attackPower" },
+	charstats = { attackpower = "attackPower", spellpower = "spellPower" },
 	experience = { currentXP = "xp", totalXP = "xpMax", percentXP = "xpPercent" },
 	rangecheck = { range = "distance" },
 	unitcharacteristics = { name = "unitName" },
@@ -848,7 +848,14 @@ local function translateLoad(source, data, report)
 			destination[field] = source[field] and values.trueValue or values.falseValue
 		end
 	end
-	local simple = { "level", "zone", "stance", "player", "realm", "guild" }
+	local simple = { "level", "zone", "player", "realm", "guild" }
+	-- Load.lua's stance constraint takes the multi-select tier, and what a source
+	-- carrying one holds is the single bar position an older WeakAuras stored.
+	-- Coerced, since the position is matched against a number.
+	if source.use_stance and tonumber(source.stance) then
+		destination.use_stance = "single"
+		destination.stance = tonumber(source.stance)
+	end
 	for i = 1, table.getn(simple) do
 		local field = simple[i]
 		if source["use_" .. field] and source[field] ~= nil then
@@ -1081,7 +1088,10 @@ end
 local GENERIC_ARG_NAMES = {
 	health = { healthDeficit = "deficit" },
 	power = { powerDeficit = "deficit" },
-	charstats = { attackPower = "attackpower" },
+	-- Upstream's `hastepercent` is deliberately absent: theirs is a rating
+	-- conversion, ours the cast-speed multiplier, and equating them would carry
+	-- a wrong number across rather than none.
+	charstats = { attackPower = "attackpower", spellPower = "spellpower" },
 	experience = { xp = "currentXP", xpPercent = "percentXP" },
 	rangecheck = { distance = "range" },
 	unitcharacteristics = { unitName = "namerealm" },

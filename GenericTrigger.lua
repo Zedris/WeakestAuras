@@ -1289,6 +1289,122 @@ function WA.ScanPlayerCC()
 	return false, nil, nil, nil, 0, 0
 end
 
+do -- scoped; see the local-ceiling note in the file header
+
+-- The character-stat readers the charstats prototype's args call by key. One
+-- entry point rather than inline API calls per arg: most of these are
+-- multi-return with a discarded first value, which an arg `init` expression
+-- cannot express on 5.0, and each reader guards its own API's absence once.
+--
+-- Four conventions here are not derivable from the call site:
+--   * UnitAttackPower / UnitRangedAttackPower return base, posBuff, negBuff with
+--     negBuff ALREADY NEGATIVE. Effective is base + pos + neg; subtracting it
+--     counts every Curse of Weakness twice, in the wrong direction.
+--   * UnitResistance's index is 0-based with 0 = armor, so the six schools are
+--     1..6. (SuperCleveRoidMacros passes 3..7 for fire..arcane and is wrong.)
+--   * GetSpellBonusDamage's school is 1-based with 1 = physical -- a different
+--     base from UnitResistance's, for the same six schools.
+--   * UnitArmor returns five values and the effective armor is the second;
+--     UnitDefense returns base and modifier, which have to be summed.
+
+local function primaryStat(index)
+	if not UnitStat then return 0 end
+	local _, effective = UnitStat("player", index)
+	return effective or 0
+end
+
+local function resistance(school)
+	if not UnitResistance then return 0 end
+	local _, total = UnitResistance("player", school)
+	return total or 0
+end
+
+local function schoolPower(school)
+	if not GetSpellBonusDamage then return 0 end
+	return GetSpellBonusDamage(school) or 0
+end
+
+local function effectiveAttackPower(fn)
+	if not fn then return 0 end
+	local base, pos, neg = fn("player")
+	return (base or 0) + (pos or 0) + (neg or 0)
+end
+
+local function weaponSpeed(offHand)
+	if not UnitAttackSpeed then return 0 end
+	local main, off = UnitAttackSpeed("player")
+	if offHand then return off or 0 end
+	return main or 0
+end
+
+local STAT_READERS = {
+	strength = function() return primaryStat(1) end,
+	agility = function() return primaryStat(2) end,
+	stamina = function() return primaryStat(3) end,
+	intellect = function() return primaryStat(4) end,
+	spirit = function() return primaryStat(5) end,
+
+	attackPower = function() return effectiveAttackPower(UnitAttackPower) end,
+	rangedAttackPower = function() return effectiveAttackPower(UnitRangedAttackPower) end,
+	mainHandSpeed = function() return weaponSpeed(false) end,
+	offHandSpeed = function() return weaponSpeed(true) end,
+
+	-- The paperdoll's "spell damage" is the best school, not their sum, and
+	-- physical (school 1) is not part of that comparison.
+	spellPower = function()
+		local best = 0
+		for school = 2, 7 do
+			local value = schoolPower(school)
+			if value > best then best = value end
+		end
+		return best
+	end,
+	spellPowerHoly = function() return schoolPower(2) end,
+	spellPowerFire = function() return schoolPower(3) end,
+	spellPowerNature = function() return schoolPower(4) end,
+	spellPowerFrost = function() return schoolPower(5) end,
+	spellPowerShadow = function() return schoolPower(6) end,
+	spellPowerArcane = function() return schoolPower(7) end,
+	healingPower = function()
+		return (GetSpellBonusHealing and GetSpellBonusHealing()) or 0
+	end,
+	spellHaste = function()
+		return (UnitSpellHaste and UnitSpellHaste("player")) or 0
+	end,
+
+	armor = function()
+		if not UnitArmor then return 0 end
+		local _, effective = UnitArmor("player")
+		return effective or 0
+	end,
+	defense = function()
+		if not UnitDefense then return 0 end
+		local base, modifier = UnitDefense("player")
+		return (base or 0) + (modifier or 0)
+	end,
+	dodge = function() return (GetDodgeChance and GetDodgeChance()) or 0 end,
+	parry = function() return (GetParryChance and GetParryChance()) or 0 end,
+	block = function() return (GetBlockChance and GetBlockChance()) or 0 end,
+
+	resistHoly = function() return resistance(1) end,
+	resistFire = function() return resistance(2) end,
+	resistNature = function() return resistance(3) end,
+	resistFrost = function() return resistance(4) end,
+	resistShadow = function() return resistance(5) end,
+	resistArcane = function() return resistance(6) end,
+}
+
+-- One player stat by key, 0 for anything this client cannot answer. Called from
+-- generated trigger code, so an unknown key returns a number rather than
+-- erroring the whole compiled test.
+function WA.CharacterStat(key)
+	local reader = STAT_READERS[key]
+	if not reader then return 0 end
+	return reader() or 0
+end
+
+end
+
 -- ---------------------------------------------------------------------------
 -- Prototypes (§4). Each = one table; adding a category never touches the
 -- system code above or below.
@@ -3264,36 +3380,129 @@ PROTOTYPES["experience"] = {
 }
 
 -- Character stats (raw values, not ratings -- vanilla has no rating system).
--- UnitStat's effective value is its 2nd return (base is 1st); captured via a
--- plain multi-assign, not an `and`-chain. Always active -- a status surface for
--- conditions/text, no required gate.
+-- Every value comes from WA.CharacterStat, which owns the client's return
+-- conventions; the args here only name what to read. Always active -- a status
+-- surface for conditions/text, no required gate.
+--
+-- Only what the client itself holds. Crit, hit, mp5 and weapon skill are not
+-- fields on this client and cannot be read at all, so they are absent rather
+-- than approximated -- see design/plans/CHARACTER_STATS_PLAN.md.
 PROTOTYPES["charstats"] = {
 	displayName = "Character Stats",
 	wa2Event = "Character Stats",
 	category = "unit",
 	progressType = "none",
-	events = function() return { "UNIT_STATS", "UNIT_ATTACK_POWER", "UNIT_AURA", "PLAYER_ENTERING_WORLD" } end,
+	-- PLAYER_DAMAGE_DONE_MODS is what moves when spell power changes, and
+	-- UNIT_INVENTORY_CHANGED is vanilla's equipment-change event.
+	events = function()
+		return { "UNIT_STATS", "UNIT_ATTACK_POWER", "UNIT_RANGED_ATTACK_POWER", "UNIT_ATTACK",
+			"UNIT_ATTACK_SPEED", "UNIT_DAMAGE", "UNIT_DEFENSE", "UNIT_RESISTANCES", "UNIT_AURA",
+			"PLAYER_DAMAGE_DONE_MODS", "UNIT_INVENTORY_CHANGED", "PLAYER_ENTERING_WORLD" }
+	end,
 	force_events = true,
 	icon = "Interface\\Icons\\INV_Misc_GroupLooking",
 	iconFunc = function() return "Interface\\Icons\\INV_Misc_GroupLooking" end,
 	nameFunc = function() return "Character Stats" end,
-	init = function()
-		return "local function _stat(i) local b, e = UnitStat(\"player\", i) return e or b or 0 end\n"
-			.. "local strength = UnitStat and _stat(1) or 0\n"
-			.. "local agility = UnitStat and _stat(2) or 0\n"
-			.. "local stamina = UnitStat and _stat(3) or 0\n"
-			.. "local intellect = UnitStat and _stat(4) or 0\n"
-			.. "local spirit = UnitStat and _stat(5) or 0\n"
-			.. "local attackPower = 0\n"
-			.. "if UnitAttackPower then local ab, ap, an = UnitAttackPower(\"player\") attackPower = (ab or 0) + (ap or 0) - (an or 0) end"
-	end,
 	args = {
-		{ name = "strength", type = "number", display = "Strength", operator = ">=", store = true, conditionType = "number" },
-		{ name = "agility", type = "number", display = "Agility", operator = ">=", store = true, conditionType = "number" },
-		{ name = "stamina", type = "number", display = "Stamina", operator = ">=", store = true, conditionType = "number" },
-		{ name = "intellect", type = "number", display = "Intellect", operator = ">=", store = true, conditionType = "number" },
-		{ name = "spirit", type = "number", display = "Spirit", operator = ">=", store = true, conditionType = "number" },
-		{ name = "attackPower", type = "number", display = "Attack Power", operator = ">=", store = true, conditionType = "number" },
+		{ type = "header", display = "Primary Stats" },
+		{ name = "strength", type = "number", display = "Strength",
+			init = [[WeakestAuras.CharacterStat("strength")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "agility", type = "number", display = "Agility",
+			init = [[WeakestAuras.CharacterStat("agility")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "stamina", type = "number", display = "Stamina",
+			init = [[WeakestAuras.CharacterStat("stamina")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "intellect", type = "number", display = "Intellect",
+			init = [[WeakestAuras.CharacterStat("intellect")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "spirit", type = "number", display = "Spirit",
+			init = [[WeakestAuras.CharacterStat("spirit")]],
+			multiEntry = true, store = true, conditionType = "number" },
+
+		{ type = "header", display = "Attack" },
+		{ name = "attackPower", type = "number", display = "Attack Power",
+			init = [[WeakestAuras.CharacterStat("attackPower")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "rangedAttackPower", type = "number", display = "Ranged Attack Power",
+			init = [[WeakestAuras.CharacterStat("rangedAttackPower")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "mainHandSpeed", type = "number", display = "Main Hand Speed",
+			init = [[WeakestAuras.CharacterStat("mainHandSpeed")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "offHandSpeed", type = "number", display = "Off Hand Speed",
+			init = [[WeakestAuras.CharacterStat("offHandSpeed")]],
+			multiEntry = true, store = true, conditionType = "number" },
+
+		{ type = "header", display = "Spell" },
+		{ name = "spellPower", type = "number", display = "Spell Power",
+			init = [[WeakestAuras.CharacterStat("spellPower")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "healingPower", type = "number", display = "Healing Power",
+			init = [[WeakestAuras.CharacterStat("healingPower")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "spellHaste", type = "number", display = "Spell Haste (%)",
+			init = [[WeakestAuras.CharacterStat("spellHaste")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		-- Per-school spell power is a text placeholder and a condition variable,
+		-- not a filter: upstream offers the best school alone, and six more
+		-- checkboxes would buy a comparison nobody writes.
+		{ name = "spellPowerHoly", type = "hidden", display = "Spell Power (Holy)",
+			init = [[WeakestAuras.CharacterStat("spellPowerHoly")]],
+			store = true, conditionType = "number" },
+		{ name = "spellPowerFire", type = "hidden", display = "Spell Power (Fire)",
+			init = [[WeakestAuras.CharacterStat("spellPowerFire")]],
+			store = true, conditionType = "number" },
+		{ name = "spellPowerNature", type = "hidden", display = "Spell Power (Nature)",
+			init = [[WeakestAuras.CharacterStat("spellPowerNature")]],
+			store = true, conditionType = "number" },
+		{ name = "spellPowerFrost", type = "hidden", display = "Spell Power (Frost)",
+			init = [[WeakestAuras.CharacterStat("spellPowerFrost")]],
+			store = true, conditionType = "number" },
+		{ name = "spellPowerShadow", type = "hidden", display = "Spell Power (Shadow)",
+			init = [[WeakestAuras.CharacterStat("spellPowerShadow")]],
+			store = true, conditionType = "number" },
+		{ name = "spellPowerArcane", type = "hidden", display = "Spell Power (Arcane)",
+			init = [[WeakestAuras.CharacterStat("spellPowerArcane")]],
+			store = true, conditionType = "number" },
+
+		{ type = "header", display = "Defense" },
+		{ name = "armor", type = "number", display = "Armor",
+			init = [[WeakestAuras.CharacterStat("armor")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "defense", type = "number", display = "Defense",
+			init = [[WeakestAuras.CharacterStat("defense")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "dodge", type = "number", display = "Dodge (%)",
+			init = [[WeakestAuras.CharacterStat("dodge")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "parry", type = "number", display = "Parry (%)",
+			init = [[WeakestAuras.CharacterStat("parry")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "block", type = "number", display = "Block (%)",
+			init = [[WeakestAuras.CharacterStat("block")]],
+			multiEntry = true, store = true, conditionType = "number" },
+
+		{ type = "header", display = "Resistance" },
+		{ name = "resistHoly", type = "number", display = "Holy Resistance",
+			init = [[WeakestAuras.CharacterStat("resistHoly")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "resistFire", type = "number", display = "Fire Resistance",
+			init = [[WeakestAuras.CharacterStat("resistFire")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "resistNature", type = "number", display = "Nature Resistance",
+			init = [[WeakestAuras.CharacterStat("resistNature")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "resistFrost", type = "number", display = "Frost Resistance",
+			init = [[WeakestAuras.CharacterStat("resistFrost")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "resistShadow", type = "number", display = "Shadow Resistance",
+			init = [[WeakestAuras.CharacterStat("resistShadow")]],
+			multiEntry = true, store = true, conditionType = "number" },
+		{ name = "resistArcane", type = "number", display = "Arcane Resistance",
+			init = [[WeakestAuras.CharacterStat("resistArcane")]],
+			multiEntry = true, store = true, conditionType = "number" },
 	},
 }
 

@@ -450,9 +450,18 @@ end
 function WeakestAuras.MultiSelectMatches(config, name, value)
 	local mode = WeakestAuras.MultiSelectMode(config, name)
 	if mode == "off" then return true end
-	if mode == "single" then return config[name] == value end
+	-- A numeric domain (the shapeshift bar position) is matched loosely, since a
+	-- stored key survives a round trip through a foreign serialiser as a string
+	-- and would otherwise miss the number the client reports. The compiled half
+	-- coerces the same way -- GenericTrigger's multiSelectSource.
+	if mode == "single" then
+		if config[name] == value then return true end
+		return type(value) == "number" and tonumber(config[name] or "") == value
+	end
 	local set = config[name .. "_multi"]
-	return (set ~= nil and set[value]) and true or false
+	if set == nil then return false end
+	if set[value] then return true end
+	return (type(value) == "number" and set[tostring(value)]) and true or false
 end
 
 -- Folds a filter that used to be a plain on/off gate into the tier: a stored

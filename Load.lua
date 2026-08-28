@@ -148,6 +148,8 @@ local FACTION_LABELS = { Horde = "Horde", Alliance = "Alliance" }
 -- `use_<name>` holds a mode string, and the constraint passes if the character's
 -- value is the one chosen or in the set chosen. The convention and its editor
 -- live in WeakestAuras.lua; these entries only say which constraints take one.
+-- Its domain is `values`/`labels`, or a `valuesFunc` returning that pair where
+-- the domain is per-character rather than fixed (the shapeshift bar).
 WA.loadPrototype = {
 	{
 		name = "combat", display = "Combat", widget = "select", optional = true,
@@ -218,12 +220,16 @@ WA.loadPrototype = {
 		eval = function(L) return WA.MultiSelectMatches(L, "instancesize", instanceSizeBucket()) end,
 	},
 	{
-		name = "stance", display = "Stance/Form (0 = none)", widget = "range", optional = true,
-		min = 0, max = 10, step = 1, default = 0,
-		eval = function(L)
-			local form = GetShapeshiftForm and GetShapeshiftForm() or 0
-			return (form or 0) == (L.stance or 0)
-		end,
+		-- The bar's occupied slots, named per character rather than a bare number:
+		-- the picker comes from the walk the Stance/Form trigger filters on, so
+		-- slot 2 reads "2 - Defensive Stance" on a warrior and "2 - Aquatic Form"
+		-- on a druid. Positions, not SpellShapeshiftForm ids -- see
+		-- WA.ShapeshiftBarIndex for why the active slot is read off each slot's
+		-- own `active` return.
+		name = "stance", display = "Stance/Form", widget = "multiselect", optional = true,
+		valuesFunc = function() return WA.ShapeshiftForms() end, default = 0,
+		isActive = function(L) return WA.MultiSelectMode(L, "stance") ~= "off" end,
+		eval = function(L) return WA.MultiSelectMatches(L, "stance", WA.ShapeshiftBarIndex()) end,
 	},
 	{
 		name = "alive", display = "Alive", widget = "select", optional = true,
