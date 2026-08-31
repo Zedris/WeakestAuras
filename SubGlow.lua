@@ -413,6 +413,21 @@ local function glowGeometryTarget(parent, key, target)
 	return target
 end
 
+-- SetParent does not redraw a frame that was already shown when it moved: it
+-- keeps IsShown() true, IsVisible() false, and the engine never paints it
+-- (design/client/gotchas.md), which on a glow reads as the effect silently
+-- going missing while everything about it still says it is on. StartGlow is
+-- re-entered with the overlay already lit often enough to matter -- a condition
+-- writing any glow property, an options edit, the re-Add every WA.Add makes --
+-- so the move is skipped when it would change nothing and settled with the
+-- Hide/Show that forces the flag down the chain when it would.
+local function reparentOverlayFrame(frame, target)
+	if not target or frame:GetParent() == target then return end
+	local wasShown = frame:IsShown()
+	frame:SetParent(target)
+	if wasShown then frame:Hide(); frame:Show() end
+end
+
 local function applyGeometry(region)
 	local overlay = region.overlay
 	if not overlay then return end
@@ -545,8 +560,8 @@ WA.RegisterSubRegionType("subglow", {
 			end
 			if not overlay then overlay = renderer.acquire() end
 			local target = glowTarget(self.parent, glowAnchorArea(self.parentData, self.anchorData))
-			overlay:SetParent(target or self.host)
-			overlay.bgFrame:SetParent(target or self.host)
+			reparentOverlayFrame(overlay, target or self.host)
+			reparentOverlayFrame(overlay.bgFrame, target or self.host)
 			self:ApplyFrameLevel(overlay)
 			overlay.renderer = renderer
 			self.overlay = overlay
@@ -779,6 +794,19 @@ function WA.CreateExternalGlow(frame)
 			self:StopGlow()
 			self.overlay = getOverlay(glowType)
 		end
+		-- Parent and level are asserted on every start, not once at create time.
+		-- The overlay pool is shared with the sub-region glow and an overlay
+		-- comes back carrying whoever held it last -- a stranger's frame level,
+		-- UIParent from the release above, or no parent at all if the pool was
+		-- empty and it was made here. Size is written in the parent's
+		-- coordinates, so an overlay left off the target ignores the target's
+		-- scale: a parentless one draws at scale 1 against a UI at the user's
+		-- scale, and one on UIParent misses an aura's own `scale` setting.
+		reparentOverlayFrame(self.overlay, frame)
+		reparentOverlayFrame(self.overlay.bgFrame, frame)
+		local level = (frame.GetFrameLevel and frame:GetFrameLevel() or 0) + proto.SUB_LEVEL
+		self.overlay.bgFrame:SetFrameLevel(level)
+		self.overlay:SetFrameLevel(level + 1)
 		self.glowType = glowType
 		self.useGlowColor = options.use_glow_color and true or false
 		self.glowColor = options.glow_color or DEFAULT_GLOW_COLOR
