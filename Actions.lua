@@ -17,7 +17,7 @@ WA.send_chat_message_types = {
 
 WA.sound_types = {
 	[" custom"] = "Custom Sound File",
-	[" KitID"] = "Sound by Kit Name",
+	[" KitID"] = "Sound by Kit ID",
 	["Sound\\interface\\RaidWarning.wav"] = "Raid Warning",
 	["Sound\\interface\\levelup2.wav"] = "Ready Check",
 	["Sound\\interface\\iQuestComplete.wav"] = "Quest Complete",
@@ -177,39 +177,56 @@ local function sourceFor(data, spec)
 end
 
 local function hasSound(options)
+	if options.sound_type == "Stop" then return true end
 	if options.sound == " custom" then return options.sound_path and options.sound_path ~= "" end
 	if options.sound == " KitID" then return options.sound_kit_id and options.sound_kit_id ~= "" end
 	return options.sound and options.sound ~= ""
 end
 
-local function playSound(options)
-	if not hasSound(options) or type(PlaySoundFile) ~= "function" then return end
-	local path = options.sound
-	if path == " custom" then path = options.sound_path end
-	if path == " KitID" then
-		if PlaySound then pcall(PlaySound, options.sound_kit_id) end
+-- A kit id plays through C_Sound, which takes only numbers; anything else is a
+-- sound entry name, which only PlaySound takes, and which yields no handle.
+local function playKit(kit, channel)
+	local id = tonumber(kit)
+	if id then return C_Sound.PlaySound(id, channel) end
+	PlaySound(kit)
+end
+
+local function playSound(region, options)
+	region.soundHandle = nil
+	if options.sound_type == "Stop" then return end
+	local channel = options.sound_channel or "Master"
+	local ok, _, handle
+	if options.sound == " KitID" then
+		ok, _, handle = pcall(playKit, options.sound_kit_id, channel)
 	else
-		pcall(PlaySoundFile, path)
+		local path = options.sound
+		if path == " custom" then path = options.sound_path end
+		ok, _, handle = pcall(PlaySoundFile, path, channel)
 	end
+	if ok then region.soundHandle = handle end
+end
+
+function WA.SoundStop(region, fadeoutTime)
+	if region.soundHandle then StopSound(region.soundHandle, fadeoutTime) end
+	region.soundHandle = nil
 end
 
 function WA.SoundRepeatStop(region)
-	if region.soundRepeatTicker and region.soundRepeatTicker.Cancel then
-		region.soundRepeatTicker:Cancel()
-	end
+	if region.soundRepeatTicker then region.soundRepeatTicker:Cancel() end
 	region.soundRepeatTicker = nil
 end
 
 function WA.SoundPlay(region, options)
 	if not options or WA.optionsOpen or WA.forced[region.id] or WA.SquelchingActions() then return end
+	if not hasSound(options) then return end
+	WA.SoundStop(region)
 	WA.SoundRepeatStop(region)
-	playSound(options)
+	playSound(region, options)
 	local loop = options.do_loop or options.sound_type == "Loop"
-	if loop and tonumber(options.sound_repeat) and options.sound_repeat > 0
-		and C_Timer and C_Timer.NewTicker then
+	if loop and tonumber(options.sound_repeat) and options.sound_repeat > 0 then
 		region.soundRepeatTicker = C_Timer.NewTicker(options.sound_repeat, function()
 			if not region.toShow then WA.SoundRepeatStop(region); return end
-			playSound(options)
+			playSound(region, options)
 		end)
 	end
 end
@@ -219,9 +236,9 @@ function WA.PreviewSound(value, isKit)
 	if lastSoundPreviewTime == GetTime() then return end
 	lastSoundPreviewTime = GetTime()
 	if isKit then
-		if PlaySound then pcall(PlaySound, value) end
+		pcall(playKit, value, "Master")
 	elseif value and value ~= "" then
-		if PlaySoundFile then pcall(PlaySoundFile, value) end
+		pcall(PlaySoundFile, value, "Master")
 	end
 end
 
@@ -339,7 +356,7 @@ function WA.CompileActions(data)
 	local sources = cache.sources or {}
 	cache.sources = sources
 	WA.customActionsFunctions[id] = cache
-	for i = 1, table.getn(ACTION_SPECS) do
+	for i = 1, #ACTION_SPECS do
 		local spec = ACTION_SPECS[i]
 		local source = sourceFor(data, spec)
 		if sources[spec.key] ~= source then
@@ -391,9 +408,9 @@ function WA.UpdateSoundWarnings(data)
 
 	local soundCondition, ttsCondition
 	local conditions = data.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local changes = conditions[i].changes or {}
-		for c = 1, table.getn(changes) do
+		for c = 1, #changes do
 			local change = changes[c]
 			if change.property == "sound" then
 				soundCondition = true
@@ -484,7 +501,7 @@ local function messageFields(fields, data, action, when, condition)
 		local formatFields = WA.FormatOptionFields(action.message,
 			function(k, d) return actionFormatGet(action, k, d) end,
 			function(k, v) actionFormatSet(data, action, k, v) end, data, prefix .. "message_format_")
-		for i = 1, table.getn(formatFields) do table.insert(fields, formatFields[i]) end
+		for i = 1, #formatFields do table.insert(fields, formatFields[i]) end
 	end
 end
 
@@ -492,16 +509,38 @@ function WA.ActionMessageFields(fields, data, action, when, condition)
 	messageFields(fields, data, action, when, condition)
 end
 
-local function soundFields(fields, data, action, condition)
+local SOUND_CHANNELS = { "Master", "SFX", "Ambience", "Music" }
+local SOUND_CHANNEL_LABELS = { Master = "Master", SFX = "Sound", Ambience = "Ambience", Music = "Music" }
+
+-- Upstream offers the stop on hide only: a show sound has nothing earlier of
+-- this aura's to cut off.
+local function stopSoundFields(fields, data, action)
+	table.insert(fields, { type = "toggle", name = "Stop Sound", key = "stop_sound",
+		get = function() return action.stop_sound and true or false end,
+		set = function(v) action.stop_sound = v and true or false; WA.Add(data); WA.RefreshOptions() end })
+	if not action.stop_sound then return end
+	table.insert(fields, { type = "toggle", name = "Fade Out", key = "do_sound_fade",
+		get = function() return action.do_sound_fade and true or false end,
+		set = function(v) action.do_sound_fade = v and true or false; WA.Add(data); WA.RefreshOptions() end })
+	if action.do_sound_fade then
+		table.insert(fields, { type = "range", name = "Fade Out Time (seconds)", key = "stop_sound_fade", min = 0, max = 10, step = 0.1,
+			get = function() return action.stop_sound_fade or 0 end,
+			set = function(v) action.stop_sound_fade = v; WA.Add(data) end })
+	end
+end
+
+local function soundFields(fields, data, action, condition, when)
 	local previews = {}
 	for key in pairs(WA.sound_types) do
 		if key ~= " custom" and key ~= " KitID" then previews[key] = true end
 	end
 	if condition then
-		table.insert(fields, { type = "select", name = "Sound Type", key = "sound_type", values = { "Play", "Loop" },
+		table.insert(fields, { type = "select", name = "Sound Type", key = "sound_type", values = { "Play", "Loop", "Stop" },
 			get = function() return action.sound_type or "Play" end,
 			set = function(v) action.sound_type = v; WA.Add(data); WA.RefreshOptions() end })
+		if action.sound_type == "Stop" then return end
 	else
+		if when == "finish" then stopSoundFields(fields, data, action) end
 		table.insert(fields, { type = "toggle", name = "Play Sound", key = "do_sound",
 			get = function() return action.do_sound and true or false end,
 			set = function(v) action.do_sound = v and true or false; WA.Add(data); WA.RefreshOptions() end })
@@ -523,10 +562,14 @@ local function soundFields(fields, data, action, condition)
 			get = function() return action.sound_path end,
 			set = function(v) action.sound_path = v; WA.PreviewSound(v); WA.Add(data) end })
 	elseif action.sound == " KitID" then
-		table.insert(fields, { type = "input", name = "Sound Kit Name", key = "sound_kit_id",
+		table.insert(fields, { type = "input", name = "Sound Kit ID or Name", key = "sound_kit_id",
 			get = function() return action.sound_kit_id end,
 			set = function(v) action.sound_kit_id = v; WA.PreviewSound(v, true); WA.Add(data) end })
 	end
+	table.insert(fields, { type = "select", name = "Sound Channel", key = "sound_channel",
+		values = SOUND_CHANNELS, labels = SOUND_CHANNEL_LABELS,
+		get = function() return action.sound_channel or "Master" end,
+		set = function(v) action.sound_channel = v; WA.Add(data) end })
 end
 
 -- Ordered by *label*, not by path: the list is long enough to need scrolling and
@@ -541,8 +584,8 @@ table.sort(WA.SoundValues, function(a, b)
 	return WA.sound_types[a] < WA.sound_types[b]
 end)
 
-function WA.ActionSoundFields(fields, data, action, condition)
-	soundFields(fields, data, action, condition)
+function WA.ActionSoundFields(fields, data, action, condition, when)
+	soundFields(fields, data, action, condition, when)
 end
 
 function WA.PerformActions(data, when, region)
@@ -560,6 +603,10 @@ function WA.PerformActions(data, when, region)
 		WA.HandleChatAction(actions.message_type, actions.message, actions.message_dest,
 			actions.message_dest_isunit, actions.r, actions.g, actions.b, region,
 			customValues, when, region[when .. "Formatters"])
+	end
+	-- Upstream's fade is in seconds; StopSound takes milliseconds.
+	if actions.stop_sound then
+		WA.SoundStop(region, actions.do_sound_fade and actions.stop_sound_fade and actions.stop_sound_fade * 1000)
 	end
 	if actions.do_sound then WA.SoundPlay(region, actions) end
 	if actions.do_custom and actions.custom then
@@ -615,9 +662,7 @@ function WA.HandleChatAction(messageType, message, messageDest, messageDestIsUni
 			pcall(CombatText_AddMessage, message, COMBAT_TEXT_SCROLL_FUNCTION, r or 1, g or 1, b or 1)
 		end
 	elseif messageType == "TTS" then
-		if C_VoiceChat and C_VoiceChat.SpeakText and C_TTSSettings and C_TTSSettings.GetSpeechVoiceID then
-			pcall(C_VoiceChat.SpeakText, C_TTSSettings.GetSpeechVoiceID(), message)
-		end
+		pcall(C_VoiceChat.SpeakText, C_TTSSettings.GetSpeechVoiceID(), message)
 	else
 		if messageType == "WHISPER" and messageDest then
 			messageDest = WA.ReplacePlaceHolders(messageDest, region, formatters, customValues)
@@ -625,8 +670,8 @@ function WA.HandleChatAction(messageType, message, messageDest, messageDestIsUni
 			pcall(SendChatMessage, message, "WHISPER", nil, messageDest)
 		elseif messageType == "SMARTRAID" then
 			local channel = "SAY"
-			if GetNumRaidMembers and GetNumRaidMembers() > 0 then channel = "RAID"
-			elseif GetNumPartyMembers and GetNumPartyMembers() > 0 then channel = "PARTY" end
+			if IsInRaid() then channel = "RAID"
+			elseif IsInGroup() then channel = "PARTY" end
 			pcall(SendChatMessage, message, channel)
 		else
 			pcall(SendChatMessage, message, messageType)
@@ -644,6 +689,7 @@ local function addRegionMethods(region)
 		end
 	end
 	region.SoundPlay = function(self, options) WA.SoundPlay(self, options) end
+	region.SoundStop = function(self, fadeoutTime) WA.SoundStop(self, fadeoutTime) end
 	region.SoundRepeatStop = function(self) WA.SoundRepeatStop(self) end
 	region.SendChat = function(self, options) WA.SendChat(self, options) end
 	region.GlowExternal = function(self, options) WA.GlowExternal(self, options) end

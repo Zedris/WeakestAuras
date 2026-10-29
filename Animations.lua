@@ -87,7 +87,7 @@ starShakeDecay = [[function(progress, startX, startY, deltaX, deltaY)
 	return startX + e * (p * x2 + (1 - p) * x1) * xs, startY + e * (p * y2 + (1 - p) * y1) * ys
 end]],
 bounceDecay = [[function(progress, startX, startY, deltaX, deltaY)
-	local p = math.mod(progress * 3.5, 1)
+	local p = math.fmod(progress * 3.5, 1)
 	local b = math.ceil(progress * 3.5)
 	local d = math.sin(p * math.pi) * b / 4
 	return startX + d * deltaX, startY + d * deltaY
@@ -153,28 +153,17 @@ WA.anim_presets = {
 	bounce = { type = "custom", duration = 0.6, use_translate = true, x = 0, y = 25, translateType = "bounce" },
 }
 
-local function rgbToHsv(r, g, b)
-	local max, min = math.max(r, g, b), math.min(r, g, b)
-	local d, h, s = max - min, 0, 0
-	if max ~= 0 then s = d / max end
-	if d ~= 0 then
-		if max == r then h = math.mod((g - b) / d, 6) elseif max == g then h = (b - r) / d + 2 else h = (r - g) / d + 4 end
-		h = h * 60; if h < 0 then h = h + 360 end
-	end
-	return h, s, max
-end
-local function hsvToRgb(h, s, v)
-	if s == 0 then return v, v, v end
-	h = math.mod(h, 360) / 60
-	local i, f = math.floor(h), h - math.floor(h)
-	local p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
-	if i == 0 then return v, t, p elseif i == 1 then return q, v, p elseif i == 2 then return p, v, t elseif i == 3 then return p, q, v elseif i == 4 then return t, p, v else return v, p, q end
+-- ClassicAPI reports a gray's hue as -1; it lerps as red, as it always has.
+local function hue(r, g, b)
+	local h, s, v = C_ColorUtil.ConvertRGBToHSV(r, g, b)
+	if h < 0 then h = 0 end
+	return h, s, v
 end
 function WA.GetHSVTransition(p, r1, g1, b1, a1, r2, g2, b2, a2)
-	local h1, s1, v1 = rgbToHsv(r1, g1, b1); local h2, s2, v2 = rgbToHsv(r2, g2, b2)
+	local h1, s1, v1 = hue(r1, g1, b1); local h2, s2, v2 = hue(r2, g2, b2)
 	local d = h2 - h1
 	if d < -180 then d = d + 360 elseif d > 180 then d = d - 360 end
-	local r, g, b = hsvToRgb(h1 + p * d, s1 + p * (s2 - s1), v1 + p * (v2 - v1))
+	local r, g, b = C_ColorUtil.ConvertHSVToRGB((h1 + p * d) % 360, s1 + p * (s2 - s1), v1 + p * (v2 - v1))
 	return r, g, b, a1 + p * (a2 - a1)
 end
 function WA.ParseNumber(value)

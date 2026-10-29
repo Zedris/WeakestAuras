@@ -157,16 +157,16 @@ function S.splitFilterTerms(text)
 end
 
 function S.matchesFilter(id, terms)
-	if table.getn(terms) == 0 then return true end
+	if #terms == 0 then return true end
 	local lower = string.lower(id)
-	for i = 1, table.getn(terms) do
+	for i = 1, #terms do
 		if string.find(lower, terms[i], 1, true) then return true end
 	end
 	return false
 end
 
 function S.isSelected(id)
-	for i = 1, table.getn(S.selection) do
+	for i = 1, #S.selection do
 		if S.selection[i] == id then return true end
 	end
 	return false
@@ -178,7 +178,7 @@ end
 -- directly, so it stays inert (rather than acting on an arbitrary member)
 -- once a second aura joins the selection.
 function S.primaryId()
-	if table.getn(S.selection) == 1 then return S.selection[1] end
+	if #S.selection == 1 then return S.selection[1] end
 	return nil
 end
 
@@ -206,9 +206,9 @@ function S.applySelectionChange()
 	-- that doesn't exist yet -- except for an empty group, where offering to
 	-- fill it is the whole point.
 	local sole = S.primaryId() and WeakestAurasDB.displays[S.primaryId()]
-	if sole and WA.IsGroup(sole) and table.getn(sole.controlledChildren or {}) == 0 then
+	if sole and WA.IsGroup(sole) and #(sole.controlledChildren or {}) == 0 then
 		S.activeTab = "new"
-	elseif S.activeTab == "new" and table.getn(S.selection) > 0 then
+	elseif S.activeTab == "new" and #S.selection > 0 then
 		S.activeTab = "info"
 		if S.tabStrip then S.tabStrip.select("info") end
 	end
@@ -237,7 +237,7 @@ function S.siblingList(parentId)
 end
 
 function S.indexOfId(list, id)
-	for i = 1, table.getn(list) do
+	for i = 1, #list do
 		if list[i] == id then return i end
 	end
 	return nil
@@ -255,7 +255,7 @@ function S.leafDescendants(id, out)
 	if not data then return out end
 	if WA.IsGroup(data) then
 		local children = data.controlledChildren or {}
-		for i = 1, table.getn(children) do
+		for i = 1, #children do
 			S.leafDescendants(children[i], out)
 		end
 	else
@@ -271,8 +271,8 @@ end
 -- at all after a ctrl-click selects its hidden children.
 function S.allDescendantsSelected(id)
 	local leaves = S.leafDescendants(id)
-	if table.getn(leaves) == 0 then return false end
-	for i = 1, table.getn(leaves) do
+	if #leaves == 0 then return false end
+	for i = 1, #leaves do
 		if not S.isSelected(leaves[i]) then return false end
 	end
 	return true
@@ -294,20 +294,20 @@ function S.toggleSelection(id)
 	local ids = (data and WA.IsGroup(data)) and S.leafDescendants(id) or { id }
 
 	local allSelected = true
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		if not S.isSelected(ids[i]) then allSelected = false end
 	end
 
 	if allSelected then
 		local remove = {}
-		for i = 1, table.getn(ids) do remove[ids[i]] = true end
+		for i = 1, #ids do remove[ids[i]] = true end
 		local kept = {}
-		for i = 1, table.getn(S.selection) do
+		for i = 1, #S.selection do
 			if not remove[S.selection[i]] then table.insert(kept, S.selection[i]) end
 		end
 		S.selection = kept
 	else
-		for i = 1, table.getn(ids) do
+		for i = 1, #ids do
 			if not S.isSelected(ids[i]) then table.insert(S.selection, ids[i]) end
 		end
 	end
@@ -324,7 +324,7 @@ end
 -- shift-range-select rules. Adds to the existing selection rather than
 -- replacing it, so ctrl-click picks plus a trailing shift-click compose.
 function S.selectRange(id)
-	local anchor = S.selection[table.getn(S.selection)]
+	local anchor = S.selection[#S.selection]
 	if not anchor or anchor == id then
 		S.setSelection(id)
 		return
@@ -335,7 +335,7 @@ function S.selectRange(id)
 
 	local rows = S.buildRows()
 	local anchorIdx, targetIdx
-	for i = 1, table.getn(rows) do
+	for i = 1, #rows do
 		if rows[i].id == anchor then anchorIdx = i end
 		if rows[i].id == id then targetIdx = i end
 	end
@@ -377,7 +377,7 @@ end
 -- Rows are pooled and rebound, so the row a menu was opened over is not
 -- guaranteed to still hold the aura the menu was built for.
 function S.renameById(id)
-	for i = 1, table.getn(S.rows or {}) do
+	for i = 1, #(S.rows or {}) do
 		local row = S.rows[i]
 		if row.id == id and row:IsShown() then
 			S.beginRename(row)
@@ -423,7 +423,7 @@ function S.pasteSettings(id)
 	if not WA.IsGroup(clip.source) and WA.IsGroup(data) then
 		targets = S.leafDescendants(id)
 	end
-	for i = 1, table.getn(targets) do
+	for i = 1, #targets do
 		local target = WeakestAurasDB.displays[targets[i]]
 		if target then
 			S.copyAuraPart(clip.source, target, clip.part)
@@ -447,7 +447,7 @@ function S.showAuraMenu(id, anchor)
 	-- less the type the aura already is.
 	local convert = {}
 	local types = WA.RegionTypeList(isGroup)
-	for i = 1, table.getn(types) do
+	for i = 1, #types do
 		local regionType = types[i]
 		if regionType ~= data.regionType then
 			table.insert(convert, {
@@ -461,7 +461,7 @@ function S.showAuraMenu(id, anchor)
 
 	local parts = isGroup and S.COPY_PARTS_GROUP or S.COPY_PARTS_LEAF
 	local copyItems = {}
-	for i = 1, table.getn(parts) do
+	for i = 1, #parts do
 		local entry = parts[i]
 		table.insert(copyItems, {
 			text = entry.text,
@@ -477,7 +477,7 @@ function S.showAuraMenu(id, anchor)
 		table.insert(items, { text = clip.text, onClick = function() S.pasteSettings(id) end })
 	end
 
-	if table.getn(convert) > 0 then
+	if #convert > 0 then
 		table.insert(items, { text = "Convert to", submenu = convert })
 	end
 	table.insert(items, {
@@ -581,7 +581,7 @@ end
 function S.commonParent()
 	local first = WeakestAurasDB.displays[S.selection[1]]
 	local parent = first and first.parent
-	for i = 2, table.getn(S.selection) do
+	for i = 2, #S.selection do
 		local data = WeakestAurasDB.displays[S.selection[i]]
 		if not data or data.parent ~= parent then return nil end
 	end
@@ -599,7 +599,7 @@ end
 -- own habit.
 function S.groupSelection(regionType)
 	regionType = regionType or "group"
-	local n = table.getn(S.selection)
+	local n = #S.selection
 	local commonParent = S.commonParent()
 
 	local group = WA.NewAura(regionType)
@@ -617,7 +617,7 @@ end
 -- the obvious next gesture -- dragging them somewhere -- acts on the new ones.
 function S.duplicateSelection()
 	local made = {}
-	for i = 1, table.getn(S.selection) do
+	for i = 1, #S.selection do
 		local newId = WA.DuplicateAura(S.selection[i])
 		if newId then table.insert(made, newId) end
 	end
@@ -630,7 +630,7 @@ end
 -- there's no cascade-vs-ungroup ambiguity to resolve here -- every call is
 -- a plain leaf delete.
 function S.deleteSelection()
-	for i = 1, table.getn(S.selection) do
+	for i = 1, #S.selection do
 		WA.DeleteAura(S.selection[i])
 	end
 	S.clearSelection()
@@ -753,7 +753,7 @@ function S.getInfoOptions(data)
 	-- never calls them.
 	local hasCustomTrigger
 	local triggers = data.triggers or {}
-	for i = 1, table.getn(triggers) do
+	for i = 1, #triggers do
 		local t = WA.GetTrigger(data, i)
 		if t and t.type == "custom" then hasCustomTrigger = true; break end
 	end
@@ -896,7 +896,7 @@ end
 -- sections don't share one fold state.
 function S.collapsibleSections(fields, data, prefix)
 	local out, folded = {}, false
-	for i = 1, table.getn(fields) do
+	for i = 1, #fields do
 		local f = fields[i]
 		if f.type == "header" then
 			folded = false
@@ -957,7 +957,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 	-- label counts per type. Advanced for every entry, not just the ones with an
 	-- options block, so it cannot drift from WA.GetProperties' identical count.
 	local perType = {}
-	for i = 1, table.getn(subs) do
+	for i = 1, #subs do
 		local sub = subs[i]
 		local idx = i
 		local spec = WA.subRegionTypes[sub.type]
@@ -994,7 +994,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 				-- that removes a configured effect on one click.
 				onDelete = not enforced and function()
 					local map = { [idx] = false }
-					for i = idx + 1, table.getn(data.subRegions) do map[i] = i - 1 end
+					for i = idx + 1, #data.subRegions do map[i] = i - 1 end
 					table.remove(data.subRegions, idx)
 					WA.RemapSubRegionRefs(data, map)
 					S.remapCollapsed(data, "sub:", map)
@@ -1016,7 +1016,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 					delete = false,
 					duplicate = not enforced and function(list, i)
 						local map = {}
-						for j = table.getn(list), i + 1, -1 do map[j] = j + 1 end
+						for j = #list, i + 1, -1 do map[j] = j + 1 end
 						table.insert(list, i + 1, WA.DeepCopy(list[i]))
 						WA.RemapSubRegionRefs(data, map)
 						S.remapCollapsed(data, "sub:", map)
@@ -1044,7 +1044,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 			})
 			if not collapsed then
 				local typeFields = spec.options(data, sub, idx)
-				for j = 1, table.getn(typeFields) do
+				for j = 1, #typeFields do
 					table.insert(fields, typeFields[j])
 				end
 			end
@@ -1063,7 +1063,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 		end
 	end
 	table.sort(addable)
-	if table.getn(addable) > 0 then
+	if #addable > 0 then
 		table.insert(fields, {
 			type = "menu", name = "+ Add Display Effect", scope = "tab", values = addable, labels = addLabels,
 			onSelect = function(name)
@@ -1073,7 +1073,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 				local default = spec.defaultFor and spec.defaultFor(data.regionType) or spec.default
 				table.insert(data.subRegions, copySubDefault(default))
 				-- Open the one just added -- it's what the user is about to edit.
-				S.setCollapsed(data, "sub:" .. table.getn(data.subRegions), false)
+				S.setCollapsed(data, "sub:" .. #data.subRegions, false)
 				WA.Add(data)
 				S.refreshTabContent()
 			end,
@@ -1086,7 +1086,7 @@ function S.appendDisplayEffectsOptions(fields, data)
 	-- afford to repeat it; this page shows them all at once. Empty until
 	-- something in the aura's text references %c.
 	local customText = WA.regionPrototype.CustomTextOptionFields(data)
-	for i = 1, table.getn(customText) do table.insert(fields, customText[i]) end
+	for i = 1, #customText do table.insert(fields, customText[i]) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -1149,7 +1149,7 @@ function S.conditionVariableList(trigger, templates)
 	local map = (trigger == -1) and WA.globalConditions or ((templates and templates[trigger]) or {})
 	local vals = S.sortedKeys(map)
 	local labels = {}
-	for i = 1, table.getn(vals) do labels[vals[i]] = (map[vals[i]] and map[vals[i]].display) or vals[i] end
+	for i = 1, #vals do labels[vals[i]] = (map[vals[i]] and map[vals[i]].display) or vals[i] end
 	return vals, labels
 end
 
@@ -1196,7 +1196,7 @@ local function mergeValueText(v)
 	if v == false then return "off" end
 	if type(v) == "table" then
 		local parts = {}
-		for i = 1, table.getn(v) do
+		for i = 1, #v do
 			local piece = v[i]
 			if type(piece) == "number" then piece = math.floor(piece * 100 + 0.5) / 100 end
 			table.insert(parts, tostring(piece))
@@ -1240,8 +1240,8 @@ end
 -- Mirrors upstream's mergeConditionTemplates.
 local function mergedConditionTemplates(members)
 	local out, numTriggers = {}, 0
-	for m = 1, table.getn(members) do
-		local n = table.getn(members[m].triggers or {})
+	for m = 1, #members do
+		local n = #(members[m].triggers or {})
 		if n > numTriggers then numTriggers = n end
 		local mine = WA.GetConditionTemplates(members[m])
 		for triggernum, vars in pairs(mine) do
@@ -1264,7 +1264,7 @@ end
 -- registry table is mutated. Mirrors upstream's buildAllPotentialProperties.
 local function mergedConditionProperties(members)
 	local out = {}
-	for m = 1, table.getn(members) do
+	for m = 1, #members do
 		for k, v in pairs(WA.GetProperties(members[m])) do
 			local have = out[k]
 			if not have then
@@ -1288,7 +1288,7 @@ local function mergedConditionProperties(members)
 end
 
 local function getOrCreateSubCheck(base, path)
-	for i = 1, table.getn(path) do
+	for i = 1, #path do
 		base.checks = base.checks or {}
 		base.checks[path[i]] = base.checks[path[i]] or {}
 		base = base.checks[path[i]]
@@ -1299,8 +1299,8 @@ end
 local function removeSubCheck(base, path)
 	getOrCreateSubCheck(base, path)
 	local parent = base
-	for i = 1, table.getn(path) - 1 do parent = parent.checks[path[i]] end
-	table.remove(parent.checks, path[table.getn(path)])
+	for i = 1, #path - 1 do parent = parent.checks[path[i]] end
+	table.remove(parent.checks, path[#path])
 end
 
 -- Deep equality for combination subtrees: only strictly equal trees merge,
@@ -1309,8 +1309,8 @@ end
 local function compareSubChecks(a, b, templates)
 	if a == nil and b == nil then return true end
 	if a == nil or b == nil then return false end
-	if table.getn(a) ~= table.getn(b) then return false end
-	for i = 1, table.getn(a) do
+	if #a ~= #b then return false end
+	for i = 1, #a do
 		if a[i].trigger ~= b[i].trigger or a[i].variable ~= b[i].variable then return false end
 		if a[i].trigger == -2 then
 			if not compareSubChecks(a[i].checks, b[i].checks, templates) then return false end
@@ -1354,7 +1354,7 @@ end
 -- The first merged change of the same property this member hasn't already
 -- claimed -- two same-property changes on one member stay two rows.
 local function findMatchingProperty(all, change, id)
-	for i = 1, table.getn(all) do
+	for i = 1, #all do
 		if all[i].property == change.property then
 			if not (all[i].references and all[i].references[id]) then return i end
 		end
@@ -1408,7 +1408,7 @@ local function mergeCondition(all, cond, id, conditionIndex, props)
 	all.check.references[id] = { conditionIndex = conditionIndex, op = cond.check.op, value = cond.check.value }
 	all.check.referenceCount = all.check.referenceCount + 1
 	local insertPoint = 1
-	for changeIndex = 1, table.getn(cond.changes) do
+	for changeIndex = 1, #cond.changes do
 		local change = cond.changes[changeIndex]
 		local match = findMatchingProperty(all.changes, change, id)
 		if not match then
@@ -1430,7 +1430,7 @@ end
 -- deep-copy in at the moving insert point.
 local function mergeConditions(all, list, id, templates, props)
 	local insertPoint = 1
-	for conditionIndex = 1, table.getn(list) do
+	for conditionIndex = 1, #list do
 		local cond = list[conditionIndex]
 		local match = findMatchingCondition(all, cond, insertPoint, templates)
 		if not match then
@@ -1439,7 +1439,7 @@ local function mergeConditions(all, list, id, templates, props)
 			copy.check.sameop = true
 			copy.check.references = { [id] = { conditionIndex = conditionIndex, op = cond.check.op, value = cond.check.value } }
 			copy.check.referenceCount = 1
-			for changeIndex = 1, table.getn(copy.changes or {}) do
+			for changeIndex = 1, #(copy.changes or {}) do
 				local change = copy.changes[changeIndex]
 				initSameValue(change, props)
 				change.references = { [id] = { changeIndex = changeIndex, value = cond.changes[changeIndex].value } }
@@ -1460,7 +1460,8 @@ local function checkSameValue(samevalue, ptype)
 	if ptype == "chat" then
 		return type(samevalue) == "table" and samevalue.message_type and samevalue.message
 	elseif ptype == "sound" then
-		return type(samevalue) == "table" and samevalue.sound and samevalue.sound_type
+		return type(samevalue) == "table" and samevalue.sound_type
+			and (samevalue.sound_type == "Stop" or samevalue.sound)
 	else
 		return samevalue
 	end
@@ -1469,17 +1470,17 @@ end
 -- The whole conditions pane for a member set -- one path for every selection
 -- shape, a single aura being a one-member merge where nothing can disagree.
 local function conditionOptionsCore(fields, members)
-	local memberCount = table.getn(members)
+	local memberCount = #members
 	local multi = memberCount > 1
 	local templates, numTriggers = mergedConditionTemplates(members)
 	local props = mergedConditionProperties(members)
 
 	-- The merged condition list. Members fold in reverse, as upstream's do.
 	local conditions = {}
-	for m = table.getn(members), 1, -1 do
+	for m = #members, 1, -1 do
 		local data = members[m]
 		data.conditions = data.conditions or {}
-		for ci = 1, table.getn(data.conditions) do
+		for ci = 1, #data.conditions do
 			data.conditions[ci].check = data.conditions[ci].check or {}
 			data.conditions[ci].changes = data.conditions[ci].changes or {}
 		end
@@ -1502,7 +1503,7 @@ local function conditionOptionsCore(fields, members)
 	-- Property dropdown (shared by every change row).
 	local propVals = S.sortedKeys(props)
 	local propLabels = {}
-	for i = 1, table.getn(propVals) do propLabels[propVals[i]] = props[propVals[i]].display end
+	for i = 1, #propVals do propLabels[propVals[i]] = props[propVals[i]].display end
 
 	local function newConditionCheck()
 		local trigger = numTriggers >= 1 and 1 or -1
@@ -1643,7 +1644,7 @@ local function conditionOptionsCore(fields, members)
 		-- alwaystrue takes no operator and no value, so it gets no widgets: the
 		-- string fallback at the end of this chain would otherwise offer two.
 		if vtype == "combination" or vtype == "incompatible" or vtype == "alwaystrue" then return end
-		local top = table.getn(path) == 0
+		local top = #path == 0
 		local opDiff = multi and top and cond.check.sameop == false
 		local valDiff = multi and top and cond.check.samevalue == false
 		local function dress(f, plainName, mode)
@@ -1720,7 +1721,7 @@ local function conditionOptionsCore(fields, members)
 
 	local appendConditionCheck
 	appendConditionCheck = function(out, cond, check, path, depth)
-		local top = table.getn(path) == 0
+		local top = #path == 0
 
 		local triggerField = {
 			type = "select", name = "Trigger", half = true, indent = depth,
@@ -1793,9 +1794,9 @@ local function conditionOptionsCore(fields, members)
 
 		if check.trigger == -2 then
 			local subChecks = check.checks or {}
-			for ci = 1, table.getn(subChecks) do
+			for ci = 1, #subChecks do
 				local subPath = {}
-				for pi = 1, table.getn(path) do subPath[pi] = path[pi] end
+				for pi = 1, #path do subPath[pi] = path[pi] end
 				table.insert(subPath, ci)
 				appendConditionCheck(out, cond, subChecks[ci], subPath, depth + 1)
 			end
@@ -1827,7 +1828,7 @@ local function conditionOptionsCore(fields, members)
 			return f
 		end
 		if pentry and pentry.action then
-			local start = table.getn(out)
+			local start = #out
 			if ptype == "sound" and WA.ActionSoundFields then
 				WA.ActionSoundFields(out, members[1], changeValueProxy(cond, change), true)
 			elseif ptype == "chat" and WA.ActionMessageFields then
@@ -1844,7 +1845,7 @@ local function conditionOptionsCore(fields, members)
 			-- (one edited a table, another still holds nil): every keyed
 			-- subkey is a disagreement then, not none of them.
 			if multi and (same == nil or type(same) == "table") then
-				for fi = start + 1, table.getn(out) do
+				for fi = start + 1, #out do
 					local f = out[fi]
 					local diff
 					-- The chat colour field is a composite over the r/g/b keys.
@@ -1928,7 +1929,7 @@ local function conditionOptionsCore(fields, members)
 		end
 	end
 
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local cond = conditions[i]
 		local idx = i
 		local subset = isSubset(cond.check)
@@ -1936,7 +1937,7 @@ local function conditionOptionsCore(fields, members)
 		-- Fold state lives per member under that member's own index; the
 		-- merged section folds when ANY member has it folded (upstream's
 		-- convention), and toggling writes every member.
-		local defaultCollapsed = table.getn(conditions) > 1
+		local defaultCollapsed = #conditions > 1
 		local collapsed = false
 		eachRef(cond, function(child, ccond, childIndex)
 			if S.isCollapsed(child, "cond:" .. childIndex, defaultCollapsed) then collapsed = true end
@@ -1974,7 +1975,7 @@ local function conditionOptionsCore(fields, members)
 			table.insert(tipLines, "|cFFE0E000Only on " .. table.concat(carriers, ", ") .. "|r")
 		end
 		local parts, visible = {}, 0
-		for cj = 1, table.getn(cond.changes) do
+		for cj = 1, #cond.changes do
 			local change = cond.changes[cj]
 			local entry = change.property and props[change.property]
 			if entry and entry.display then
@@ -1990,7 +1991,7 @@ local function conditionOptionsCore(fields, members)
 					table.insert(tipLines, plain .. " |cFFE0E000differs|r")
 					if not subset then text = blue(plain) end
 				end
-				if visible + string.len(plain) > 40 and table.getn(parts) > 0 then
+				if visible + string.len(plain) > 40 and #parts > 0 then
 					table.insert(parts, "...")
 					break
 				end
@@ -1998,7 +1999,7 @@ local function conditionOptionsCore(fields, members)
 				table.insert(parts, text)
 			end
 		end
-		if table.getn(parts) > 0 then hdrName = hdrName .. ": " .. table.concat(parts, ", ") end
+		if #parts > 0 then hdrName = hdrName .. ": " .. table.concat(parts, ", ") end
 
 		-- Reordering happens on the merged pane's own axis: the section swaps
 		-- slots and every member's list is rewritten into the pane's order of
@@ -2008,22 +2009,22 @@ local function conditionOptionsCore(fields, members)
 		-- reads as sections recombining at random.
 		local function moveSection(delta)
 			local target = idx + delta
-			if target < 1 or target > table.getn(conditions) then return end
+			if target < 1 or target > #conditions then return end
 			conditions[idx], conditions[target] = conditions[target], conditions[idx]
 			S.beginRepaintBatch()
-			for m = 1, table.getn(members) do
+			for m = 1, #members do
 				local child = members[m]
 				local list, map, touched = {}, {}, false
-				for s = 1, table.getn(conditions) do
+				for s = 1, #conditions do
 					local ref = conditions[s].check.references[child.id]
 					if ref then
 						table.insert(list, child.conditions[ref.conditionIndex])
-						map[ref.conditionIndex] = table.getn(list)
-						if ref.conditionIndex ~= table.getn(list) then touched = true end
+						map[ref.conditionIndex] = #list
+						if ref.conditionIndex ~= #list then touched = true end
 					end
 				end
 				if touched then
-					for s = 1, table.getn(list) do child.conditions[s] = list[s] end
+					for s = 1, #list do child.conditions[s] = list[s] end
 					S.remapCollapsed(child, "cond:", map)
 					WA.Add(child)
 				end
@@ -2056,7 +2057,7 @@ local function conditionOptionsCore(fields, members)
 				S.refreshTabContent()
 			end,
 		}
-		if table.getn(tipLines) > 0 then
+		if #tipLines > 0 then
 			hdr.tooltip = { title = "Condition " .. idx, lines = tipLines }
 		end
 		table.insert(fields, hdr)
@@ -2073,7 +2074,7 @@ local function conditionOptionsCore(fields, members)
 					type = "button", name = "Copy to all selected",
 					onClick = function()
 						S.beginRepaintBatch()
-						for m = 1, table.getn(members) do
+						for m = 1, #members do
 							local child = members[m]
 							if not cond.check.references[child.id] then
 								local insertPoint = 1
@@ -2088,7 +2089,7 @@ local function conditionOptionsCore(fields, members)
 								if cond.check.checks then
 									newCond.check.checks = WA.DeepCopy(cond.check.checks)
 								end
-								for cj = 1, table.getn(cond.changes) do
+								for cj = 1, #cond.changes do
 									local change = cond.changes[cj]
 									local ptype = conditionPropertyType(change.property, props)
 									if checkSameValue(change.samevalue, ptype) then
@@ -2107,7 +2108,7 @@ local function conditionOptionsCore(fields, members)
 				})
 			end
 
-			for j = 1, table.getn(cond.changes) do
+			for j = 1, #cond.changes do
 				local change = cond.changes[j]
 				local changeSubset = isSubset(change)
 				local sel = {
@@ -2165,11 +2166,11 @@ local function conditionOptionsCore(fields, members)
 		onClick = function()
 			local seed = { check = newConditionCheck(), changes = {} }
 			S.beginRepaintBatch()
-			for m = 1, table.getn(members) do
+			for m = 1, #members do
 				local child = members[m]
 				child.conditions = child.conditions or {}
 				table.insert(child.conditions, WA.DeepCopy(seed))
-				S.setCollapsed(child, "cond:" .. table.getn(child.conditions), false)
+				S.setCollapsed(child, "cond:" .. #child.conditions, false)
 				WA.Add(child)
 			end
 			S.refreshTabContent()
@@ -2187,11 +2188,11 @@ end
 function S.buildMergedConditionFields(ids)
 	local fields = {}
 	local members = {}
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local data = WeakestAurasDB.displays[ids[i]]
 		if data then table.insert(members, data) end
 	end
-	if table.getn(members) > 0 then
+	if #members > 0 then
 		conditionOptionsCore(fields, members)
 	end
 	return fields
@@ -2217,7 +2218,7 @@ function S.appendLoadOptions(fields, data)
 	})
 
 	local proto = WA.loadPrototype or {}
-	for i = 1, table.getn(proto) do
+	for i = 1, #proto do
 		local arg = proto[i]
 		local useKey = "use_" .. arg.name
 
@@ -2309,7 +2310,7 @@ local DISJUNCTIVE_LABELS = { all = "All Triggers", any = "Any Trigger", custom =
 
 function S.appendTriggerOptions(fields, data)
 	local triggers = data.triggers or {}
-	local numTriggers = table.getn(triggers)
+	local numTriggers = #triggers
 
 	table.insert(fields, { type = "header", name = "Triggers" })
 
@@ -2394,7 +2395,7 @@ function S.appendTriggerOptions(fields, data)
 
 		if not collapsed then
 			local typeFields = spec and spec.options(data, tn) or {}
-			for i = 1, table.getn(typeFields) do
+			for i = 1, #typeFields do
 				table.insert(fields, typeFields[i])
 			end
 		end
@@ -2435,32 +2436,32 @@ function S.appendActionOptions(fields, data)
 
 	table.insert(fields, { type = "header", name = "Custom Functions", key = "actions.init" })
 	local initFields = codeField(data.actions.init, "do_custom", "custom", "Custom Init")
-	for i = 1, table.getn(initFields) do table.insert(fields, initFields[i]) end
+	for i = 1, #initFields do table.insert(fields, initFields[i]) end
 	local loadFields = codeField(data.actions.init, "do_custom_load", "customOnLoad", "Custom On Load")
-	for i = 1, table.getn(loadFields) do table.insert(fields, loadFields[i]) end
+	for i = 1, #loadFields do table.insert(fields, loadFields[i]) end
 	local unloadFields = codeField(data.actions.init, "do_custom_unload", "customOnUnload", "Custom On Unload")
-	for i = 1, table.getn(unloadFields) do table.insert(fields, unloadFields[i]) end
+	for i = 1, #unloadFields do table.insert(fields, unloadFields[i]) end
 
 	table.insert(fields, { type = "header", name = "On Show", key = "actions.start" })
 	if WA.ActionMessageFields then WA.ActionMessageFields(fields, data, data.actions.start, "start") end
-	if WA.ActionSoundFields then WA.ActionSoundFields(fields, data, data.actions.start) end
+	if WA.ActionSoundFields then WA.ActionSoundFields(fields, data, data.actions.start, nil, "start") end
 	if WA.ActionGlowFields then WA.ActionGlowFields(fields, data, data.actions.start, "start") end
 	local startFields = codeField(data.actions.start, "do_custom", "custom", "Custom Code")
-	for i = 1, table.getn(startFields) do table.insert(fields, startFields[i]) end
+	for i = 1, #startFields do table.insert(fields, startFields[i]) end
 
 	table.insert(fields, { type = "header", name = "On Hide", key = "actions.finish" })
 	if WA.ActionMessageFields then WA.ActionMessageFields(fields, data, data.actions.finish, "finish") end
-	if WA.ActionSoundFields then WA.ActionSoundFields(fields, data, data.actions.finish) end
+	if WA.ActionSoundFields then WA.ActionSoundFields(fields, data, data.actions.finish, nil, "finish") end
 	if WA.ActionGlowFields then WA.ActionGlowFields(fields, data, data.actions.finish, "finish") end
 	local finishFields = codeField(data.actions.finish, "do_custom", "custom", "Custom Code")
-	for i = 1, table.getn(finishFields) do table.insert(fields, finishFields[i]) end
+	for i = 1, #finishFields do table.insert(fields, finishFields[i]) end
 end
 
 function S.appendAnimationOptions(fields, data)
 	data.animation = data.animation or {}
 	local blocks = { "start", "main", "finish" }
 	local names = { start = "Start", main = "Main", finish = "Finish" }
-	for i = 1, table.getn(blocks) do
+	for i = 1, #blocks do
 		local key = blocks[i]
 		local block = data.animation[key] or { type = "none", duration_type = "seconds" }
 		data.animation[key] = block
@@ -2599,7 +2600,7 @@ end
 -- ever grow otherwise. Used both for the tail a repaint stopped using and for
 -- the whole pane on the way out.
 local function releaseNewRows(from)
-	for i = from, table.getn(S.newRows) do
+	for i = from, #S.newRows do
 		local row = S.newRows[i]
 		if row.thumb then
 			WA.ReleaseThumbnail(row.thumb)
@@ -2626,7 +2627,7 @@ end
 local function newPaneTypes(targetId)
 	local list = {}
 	local names = WA.RegionTypeList()
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local name = names[i]
 		if WA.CanPlaceAura(name, targetId) then table.insert(list, name) end
 	end
@@ -2674,7 +2675,7 @@ function S.paintNewPane()
 	local types = newPaneTypes(targetId)
 	local y = 28
 	local n = 0
-	for i = 1, table.getn(types) do
+	for i = 1, #types do
 		local rtype = types[i]
 		local spec = WA.regionTypes[rtype]
 		n = i
@@ -2852,7 +2853,7 @@ function S.refreshTabContent()
 	-- repaint hides their buttons, so none can survive a tab/aura switch.
 	LibWidgets.CloseAllMenus()
 	if S.activeTab == "new" then S.paintNewPane(); return end
-	local n = table.getn(S.selection)
+	local n = #S.selection
 	if n > 1 then
 		-- Mass edit: the merged field array across every selected aura.
 		-- Conditions and Custom Options run their own merges (a
@@ -2884,7 +2885,7 @@ function S.refreshTabContent()
 		-- the same merges the multi-selection pane runs; which id list feeds
 		-- them is the only difference between the two.
 		local leaves = S.leafDescendants(data.id)
-		local ln = table.getn(leaves)
+		local ln = #leaves
 		if ln == 0 then
 			paintContent({ { type = "header", name = "0 child auras" } })
 		elseif MULTI_TABS[S.activeTab] then
@@ -2936,7 +2937,7 @@ end
 -- produces.
 local function contributorsDisagree(list, getterKey)
 	local first, have = nil, false
-	for i = 1, table.getn(list) do
+	for i = 1, #list do
 		local f = list[i]
 		if f[getterKey] then
 			local v = f[getterKey]()
@@ -2956,7 +2957,7 @@ end
 -- contributor.
 local function mergeTooltip(item, plainName)
 	local lines = {}
-	for i = 1, table.getn(item.list) do
+	for i = 1, #item.list do
 		local c = item.list[i]
 		local text
 		if c.getOp or c.getVal then
@@ -2979,7 +2980,7 @@ end
 local function mergedGet(list, getterKey)
 	return function()
 		local first, have = nil, false
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			local f = list[i]
 			if f[getterKey] then
 				local v = f[getterKey]()
@@ -2998,7 +2999,7 @@ end
 local function mergedCall(list, fnKey)
 	return function(v)
 		S.beginRepaintBatch()
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			local fn = list[i][fnKey]
 			if fn then fn(v) end
 		end
@@ -3017,17 +3018,17 @@ local function mergeNamelist(f, list)
 	local proxy = {}
 	local agreed = true
 	local first = list[1].get and list[1].get()
-	for i = 2, table.getn(list) do
+	for i = 2, #list do
 		if not mergeValuesEqual(first, list[i].get and list[i].get()) then agreed = false end
 	end
 	if agreed and first then
-		for i = 1, table.getn(first) do proxy[i] = first[i] end
+		for i = 1, #first do proxy[i] = first[i] end
 	end
 	f.get = function() return proxy end
 	f.onChange = nil
 	local function each(op)
 		S.beginRepaintBatch()
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			local c = list[i]
 			local l = c.get and c.get()
 			if l then op(c, l) end
@@ -3059,7 +3060,7 @@ end
 
 function S.buildMergedFields(tab, ids)
 	local members = {}
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local data = WeakestAurasDB.displays[ids[i]]
 		if data then
 			S.foldProbe = {}
@@ -3069,7 +3070,7 @@ function S.buildMergedFields(tab, ids)
 			table.insert(members, { data = data, fields = fields, folds = folds })
 		end
 	end
-	if table.getn(members) == 0 then return {} end
+	if #members == 0 then return {} end
 
 	-- Sections in first-appearance order, each holding its merged header and
 	-- an ordered item list; "" is the tab-scope run before any header and
@@ -3086,7 +3087,7 @@ function S.buildMergedFields(tab, ids)
 		return s
 	end
 	local entries = {}
-	for m = 1, table.getn(members) do
+	for m = 1, #members do
 		local cur = sectionFor("")
 		-- The keyed section a plain header's subsection lives inside. A plain
 		-- header ("Spell Selection" inside a trigger) subdivides the keyed
@@ -3095,7 +3096,7 @@ function S.buildMergedFields(tab, ids)
 		-- merge into trigger 1's -- and folds when the outer section folds.
 		local outer = nil
 		local fields = members[m].fields
-		for i = 1, table.getn(fields) do
+		for i = 1, #fields do
 			local f = fields[i]
 			if f.soloOnly then
 				-- Single-aura-only: an identity, a per-aura op, or per-aura
@@ -3141,13 +3142,13 @@ function S.buildMergedFields(tab, ids)
 	-- belongs below those too, as it sits below every section in a single
 	-- member's own array.
 	local flat = {}
-	for s = 1, table.getn(sections) do
+	for s = 1, #sections do
 		if sections[s].key ~= "__tail" then table.insert(flat, sections[s]) end
 	end
 	if sectionByKey["__tail"] then table.insert(flat, sectionByKey["__tail"]) end
 
 	local merged = {}
-	for s = 1, table.getn(flat) do
+	for s = 1, #flat do
 		local section = flat[s]
 		local collapsed = false
 		-- A subsection of a folded keyed section disappears with it, header and
@@ -3172,13 +3173,13 @@ function S.buildMergedFields(tab, ids)
 				-- foldKey where that differs from its identity key (the display
 				-- effects, whose folds are addressed by bare index).
 				local foldKey = spine.foldKey or section.key
-				for m = 1, table.getn(members) do
+				for m = 1, #members do
 					if members[m].folds[foldKey] then collapsed = true end
 				end
 				hdr.collapsed = collapsed
 				local newState = not collapsed
 				hdr.onToggle = function()
-					for m = 1, table.getn(members) do
+					for m = 1, #members do
 						S.setCollapsed(members[m].data, foldKey, newState)
 					end
 					S.refreshTabContent()
@@ -3191,7 +3192,7 @@ function S.buildMergedFields(tab, ids)
 		end
 		section.nowCollapsed = collapsed
 		if not collapsed then
-			for i = 1, table.getn(section.items) do
+			for i = 1, #section.items do
 				local item = section.items[i]
 				if item.passive then
 					table.insert(merged, item.passive)
@@ -3258,7 +3259,7 @@ end
 -- list is static.
 function S.rebuildTabs()
 	local list = {}
-	for i = 1, table.getn(S.TAB_DEFS) do
+	for i = 1, #S.TAB_DEFS do
 		local def = S.TAB_DEFS[i]
 		list[i] = { value = def.key, text = def.name }
 	end
@@ -3303,7 +3304,7 @@ function S.releaseStatusIcon(icon)
 	if not icon then return end
 	icon:Hide()
 	icon.tipTitle, icon.tipDesc, icon.onClick = nil, nil, nil
-	for i = 1, table.getn(S.statusPool) do
+	for i = 1, #S.statusPool do
 		if S.statusPool[i] == icon then return end
 	end
 	table.insert(S.statusPool, icon)
@@ -3353,7 +3354,7 @@ end
 -- a top-level id has been accepted for this pass every descendant renders
 -- under it regardless of its own load state.
 local function walkTree(ids, depth, rows, forceExpand, filterTerms, bucket)
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local id = ids[i]
 		local data = WeakestAurasDB.displays[id]
 		if data and (not bucket or depth > 0 or loadBucket(id) == bucket) then
@@ -3382,7 +3383,7 @@ end
 -- which side of the divide it landed on.
 function S.buildRows()
 	local rows = {}
-	local searching = table.getn(S.searchTerms) > 0
+	local searching = #S.searchTerms > 0
 	local filterTerms = searching and S.searchTerms or nil
 
 	table.insert(rows, { header = "loaded" })
@@ -3418,7 +3419,7 @@ end
 function S.bucketMembers(bucket)
 	local ids = {}
 	local order = WA.GetOrder()
-	for i = 1, table.getn(order) do
+	for i = 1, #order do
 		if loadBucket(order[i]) == bucket then table.insert(ids, order[i]) end
 	end
 	return ids
@@ -3486,7 +3487,7 @@ local function paintAuraRow(row, entry)
 	row.iconBox:Show()
 	row.eye:Show()
 	if isGroup then
-		local n = table.getn(data.controlledChildren or {})
+		local n = #(data.controlledChildren or {})
 		row.sub:SetText(n == 1 and "1 aura" or (n .. " auras"))
 		row.expand:Show()
 		row.expand.label:SetText(S.expanded[id] == false and "+" or "-")
@@ -3594,7 +3595,7 @@ local function paintAuraRow(row, entry)
 		local own = WA.MaxWarningSeverity(data.uid)
 		if own then bestRank = WA.WarningRank(own) end
 		local leaves = S.leafDescendants(id)
-		for i = 1, table.getn(leaves) do
+		for i = 1, #leaves do
 			local child = WeakestAurasDB.displays[leaves[i]]
 			local severity = child and WA.MaxWarningSeverity(child.uid)
 			local rank = severity and WA.WarningRank(severity)
@@ -3673,7 +3674,7 @@ function S.refreshList()
 	-- The bar counts rows, not pixels. The largest offset is the one that still
 	-- fills the view, so scrolling stops with the last entry at the bottom
 	-- rather than running past it into blank space.
-	local total = table.getn(rows)
+	local total = #rows
 	local maxOffset = total - painted
 	if maxOffset < 0 then maxOffset = 0 end
 	S.maxOffset = maxOffset
@@ -3690,7 +3691,7 @@ function S.refreshList()
 	-- Every row past what the paint used goes dark. A held thumbnail or status
 	-- icon must be released on the way, or scrolling past an aura leaks one
 	-- frame per type into nothing -- the pools only ever grow.
-	for k = painted + 1, table.getn(S.rows) do
+	for k = painted + 1, #S.rows do
 		local r = S.rows[k]
 		releaseRow(r)
 		r.slotY, r.slotH = nil, nil
@@ -4014,90 +4015,35 @@ WA.Comm.OnPayload = S.openReceived
 -- differently, and the footer keeps our title row free for the toolbar.
 -- ---------------------------------------------------------------------------
 
--- Colour runs for the footer's mod list: green = present, amber = present but
--- limited, red = absent.
-local MOD_OK, MOD_WARN, MOD_BAD = "|cff33ff99", "|cffffcc00", "|cffff5555"
-
-local function classicApiBelowBaseline()
-	return type(CLASSIC_API_VERSION) == "number"
-		and CLASSIC_API_VERSION < WA.CLASSICAPI_BASELINE
-end
-
--- The Require* gate refusals recorded against one mod.
-local function degradedFor(mod)
-	local out = {}
-	local list = WA.degradedFeatures
-	for i = 1, table.getn(list) do
-		if list[i].mod == mod then table.insert(out, list[i]) end
-	end
-	return out
-end
+-- Colour runs for the footer's mod list: green = present, grey = an optional
+-- mod that is absent.
+local MOD_OK, MOD_OPTIONAL = "|cff33ff99", "|cff999999"
 
 function S.footerModsText()
 	local parts = {}
-	local caColor = MOD_OK
-	if classicApiBelowBaseline() or table.getn(degradedFor("ClassicAPI")) > 0 then
-		caColor = MOD_WARN
-	end
-	table.insert(parts, caColor .. "ClassicAPI " .. (WA.ClassicAPIVersionString() or "?") .. "|r")
-
-	local sw = WA.SuperWoWVersionString()
-	if sw then
-		local color = table.getn(degradedFor("SuperWoW")) > 0 and MOD_WARN or MOD_OK
-		table.insert(parts, color .. "SuperWoW" .. (sw ~= "" and (" " .. sw) or "") .. "|r")
-	else
-		table.insert(parts, MOD_BAD .. "SuperWoW missing|r")
-	end
+	table.insert(parts, MOD_OK .. "ClassicAPI " .. (WA.ClassicAPIVersionString() or "?") .. "|r")
 
 	local np = WA.NampowerVersionString()
 	if np or WA.hasNampower then
-		local color = table.getn(degradedFor("Nampower")) > 0 and MOD_WARN or MOD_OK
-		table.insert(parts, color .. "Nampower" .. (np and (" " .. np) or "") .. "|r")
+		table.insert(parts, MOD_OK .. "Nampower" .. (np and (" " .. np) or "") .. "|r")
 	else
-		table.insert(parts, MOD_BAD .. "Nampower missing|r")
+		table.insert(parts, MOD_OPTIONAL .. "Nampower (optional)|r")
 	end
 	return table.concat(parts, "   ")
-end
-
-local function tooltipDegraded(mod)
-	local list = degradedFor(mod)
-	for i = 1, table.getn(list) do
-		GameTooltip:AddLine("  needs " .. tostring(list[i].needs) .. ": "
-			.. tostring(list[i].label), 1, 0.8, 0, true)
-	end
 end
 
 -- Fills an already-owned GameTooltip; the caller anchors and shows it.
 function S.footerModsTooltip()
 	GameTooltip:SetText("Client mods", 1, 1, 1)
-	local ca = WA.ClassicAPIVersionString() or "?"
-	if classicApiBelowBaseline() then
-		GameTooltip:AddLine("ClassicAPI " .. ca .. " -- older than the "
-			.. WA.ClassicAPIVersionString(WA.CLASSICAPI_BASELINE)
-			.. " baseline, so newer features cannot tell what it supports. Update it.",
-			1, 0.8, 0, true)
-	else
-		GameTooltip:AddLine("ClassicAPI " .. ca, 0.2, 1, 0.6)
-	end
-	tooltipDegraded("ClassicAPI")
-
-	local sw = WA.SuperWoWVersionString()
-	if sw then
-		GameTooltip:AddLine("SuperWoW" .. (sw ~= "" and (" " .. sw) or ""), 0.2, 1, 0.6)
-	else
-		GameTooltip:AddLine("SuperWoW not detected -- triggers needing GUID units or cast events stay off.",
-			1, 0.35, 0.35, true)
-	end
-	tooltipDegraded("SuperWoW")
+	GameTooltip:AddLine("ClassicAPI " .. (WA.ClassicAPIVersionString() or "?"), 0.2, 1, 0.6)
 
 	local np = WA.NampowerVersionString()
 	if np or WA.hasNampower then
 		GameTooltip:AddLine("Nampower" .. (np and (" " .. np) or ""), 0.2, 1, 0.6)
 	else
-		GameTooltip:AddLine("Nampower not detected -- real aura durations and cast events stay off.",
-			1, 0.35, 0.35, true)
+		GameTooltip:AddLine("Nampower not installed. It is optional: without it the swing timer polls "
+			.. "the action bar for a queued ability.", 0.6, 0.6, 0.6, true)
 	end
-	tooltipDegraded("Nampower")
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddLine("Click for copyable download links.", 0.8, 0.8, 0.8)
 end
@@ -4157,9 +4103,9 @@ function S.openURLDialog(title, url)
 	end
 	local f = S.urlDialog
 	local entries = type(url) == "table" and url or { { url = url } }
-	local count = table.getn(entries)
+	local count = #entries
 
-	for i = 1, table.getn(f.rows) do
+	for i = 1, #f.rows do
 		f.rows[i].label:Hide()
 		f.rows[i].box:Hide()
 	end
@@ -4189,7 +4135,7 @@ end
 -- Where to get the three client mods WeakestAuras runs on.
 function S.openModSources()
 	local entries = {}
-	for i = 1, table.getn(WA.MOD_SOURCES) do
+	for i = 1, #WA.MOD_SOURCES do
 		table.insert(entries, {
 			label = WA.MOD_SOURCES[i].mod, url = WA.MOD_SOURCES[i].url,
 		})
@@ -4488,7 +4434,7 @@ local function buildPanel()
 		cy = cy / scale
 
 		local rows = S.buildRows()
-		local n = table.getn(rows)
+		local n = #rows
 		local offset = S.scroll.offset or 0
 		local count = S.paintedCount or 0
 
@@ -4585,7 +4531,7 @@ local function buildPanel()
 		-- (always leaves) never trips either -- what is checked is whatever is
 		-- actually being dragged.
 		local dragged = reorder.bulk and S.selection or { reorder.fromId }
-		for i = 1, table.getn(dragged) do
+		for i = 1, #dragged do
 			local d = WeakestAurasDB.displays[dragged[i]]
 			if not d or not WA.CanPlaceAura(d.regionType, targetParent) then
 				reorder.before = nil
@@ -4624,7 +4570,7 @@ local function buildPanel()
 		-- Reordering while a search narrows/flattens the rows shown would
 		-- silently move the wrong aura, so just don't start a drag then --
 		-- same reasoning as before the tree existed.
-		if not row.id or table.getn(S.searchTerms) > 0 then return end
+		if not row.id or #S.searchTerms > 0 then return end
 		local data = WeakestAurasDB.displays[row.id]
 		if not data then return end
 		-- Dragging a row that isn't already part of the current multi-selection
@@ -4634,8 +4580,8 @@ local function buildPanel()
 		-- unrelated selection would stay highlighted after only this one row
 		-- actually moved. Skipped when row.id is already the sole selection,
 		-- so an ordinary single-row drag doesn't pay for a redundant refresh.
-		local partOfMultiSelection = S.isSelected(row.id) and table.getn(S.selection) > 1
-		local alreadySoleSelection = table.getn(S.selection) == 1 and S.selection[1] == row.id
+		local partOfMultiSelection = S.isSelected(row.id) and #S.selection > 1
+		local alreadySoleSelection = #S.selection == 1 and S.selection[1] == row.id
 		if not partOfMultiSelection and not alreadySoleSelection then
 			S.setSelection(row.id)
 		end
@@ -4652,12 +4598,12 @@ local function buildPanel()
 		-- selection after the collapse-check above -- everything past this
 		-- point (trackDrag's hover targeting) is unchanged and shared with
 		-- the single-item case; only endDrag branches on it.
-		reorder.bulk = table.getn(S.selection) > 1
+		reorder.bulk = #S.selection > 1
 		-- Dim every row actually being dragged (the whole selection in bulk
 		-- mode, just this row otherwise) so the drop target reads clearly
 		-- underneath. Only rendered rows can be dimmed; that's fine, same
 		-- "currently rendered only" scope selectRange already accepts.
-		for i = 1, table.getn(S.rows) do
+		for i = 1, #S.rows do
 			local r = S.rows[i]
 			if r.id and (r.id == row.id or (reorder.bulk and S.isSelected(r.id))) then
 				r:SetAlpha(0.4)
@@ -4671,7 +4617,7 @@ local function buildPanel()
 		reorder.active = false
 		indicator:Hide()
 		groupHighlight:Hide()
-		for i = 1, table.getn(S.rows) do S.rows[i]:SetAlpha(1) end
+		for i = 1, #S.rows do S.rows[i]:SetAlpha(1) end
 
 		if reorder.bulk then
 			-- Top-down rendered order of the dragged selection, computed fresh
@@ -4680,10 +4626,10 @@ local function buildPanel()
 			-- own per-item Ungroup+Group loop.
 			local ordered = {}
 			local rowsNow = S.buildRows()
-			for i = 1, table.getn(rowsNow) do
+			for i = 1, #rowsNow do
 				if S.isSelected(rowsNow[i].id) then table.insert(ordered, rowsNow[i].id) end
 			end
-			local n = table.getn(ordered)
+			local n = #ordered
 			if reorder.hoverGroupId then
 				-- Append each in top-down order -- WA.AddChildToGroup with no
 				-- index always lands at the end, so doing this forward
@@ -4708,7 +4654,7 @@ local function buildPanel()
 				local anchorId = list[reorder.before] -- nil = drop at list's end
 				for i = n, 1, -1 do
 					local idx = anchorId and S.indexOfId(list, anchorId)
-					if not idx then idx = table.getn(list) + 1 end
+					if not idx then idx = #list + 1 end
 					WA.ReorderAura(ordered[i], reorder.parentId, idx)
 					anchorId = ordered[i]
 				end
@@ -4959,7 +4905,7 @@ local function buildPanel()
 				end
 			end
 			table.sort(live, function(a, b) return a.prio < b.prio end)
-			local n = table.getn(live)
+			local n = #live
 			for i = 1, n do
 				local icon = live[i].icon
 				icon:ClearAllPoints()
@@ -5048,7 +4994,7 @@ local function buildPanel()
 			row.lastClickId, row.lastClickAt = row.id, now
 			if arg1 == "RightButton" then
 				local id = row.id
-				if table.getn(S.selection) > 1 and S.isSelected(id) then
+				if #S.selection > 1 and S.isSelected(id) then
 					S.showBulkMenu(row)
 				else
 					S.setSelection(id)
@@ -5157,21 +5103,6 @@ local function buildPanel()
 		notifyBtn.setToggled(opts.updateNotify ~= false)
 	end)
 	S.updateNotifyBtn = notifyBtn
-
-	-- Same lit-unless-switched-off shape as the notice button. Switching it off
-	-- returns every aura trigger to reading the descriptor alone, which is the
-	-- escape hatch if a recovered debuff ever turns out to be a phantom.
-	local overflowBtn = W.toolbarButton(toolbar, "Interface\\Icons\\Spell_Shadow_CurseOfSargeras",
-		"Debuff Overflow")
-	overflowBtn:SetPoint("RIGHT", notifyBtn, "LEFT", -4, 0)
-	overflowBtn.tipDesc = "A unit shows at most 16 debuffs. Recovers the ones past that from cast events, so a trigger for one still fires."
-	overflowBtn.setToggled(WA.Options().auraOverflow ~= false)
-	overflowBtn:SetScript("OnClick", function()
-		local opts = WA.Options()
-		if opts.auraOverflow == false then opts.auraOverflow = nil else opts.auraOverflow = false end
-		overflowBtn.setToggled(opts.auraOverflow ~= false)
-	end)
-	S.overflowBtn = overflowBtn
 
 	newBtn:SetScript("OnClick", function()
 		searchBox:ClearFocus()

@@ -11,99 +11,20 @@
 -- under the same terms: GNU General Public License version 2 or later, in
 -- LICENSE. There is NO WARRANTY, to the extent permitted by law.
 
-WeakestAuras = CreateFrame("Frame")
+if WeakestAuras.disabled then return end
 
--- Builds the saved-variable table and the one field every reader assumes,
--- returning it. Must be called again after the SavedVariables file has run --
--- it executes *after* every addon file on this client and assigns the global
--- outright, so it replaces whatever was built here rather than merging into it.
--- That includes replacing it with nothing: the client writes a registered
--- variable that was nil at logout back out as a literal `WeakestAurasDB = nil`
--- (any 1.12 WTF folder shows the same line for BigWigs' optional profiles), and
--- a session that took the bail-out below never created one. A saved file from
--- such a session therefore wipes the table on every later login, which is why
--- this runs ahead of that bail-out as well as at ADDON_LOADED.
-function WeakestAuras.EnsureDB()
-  if type(WeakestAurasDB) ~= "table" then WeakestAurasDB = {} end
-  if type(WeakestAurasDB.displays) ~= "table" then WeakestAurasDB.displays = {} end
-  return WeakestAurasDB
-end
-
-WeakestAuras.EnsureDB()
-
--- ClassicAPI publishes this global (packed X*10000+Y*100+Z) on every load/
--- reload. Its absence means the client patch isn't installed, and none of
--- the aura APIs this addon needs exist.
-if not CLASSIC_API_VERSION then
-  WeakestAuras.disabled = true
-  DEFAULT_CHAT_FRAME:AddMessage(
-    "|cffff0000WeakestAuras|r requires the ClassicAPI client patch, which was not detected. " ..
-    "Get it from https://github.com/brues-code/ClassicAPI",
-    1, 0.2, 0.2
-  )
-  return
-end
-
--- Capability probes, resolved once at load. ClassicAPI is the hard gate above;
--- SuperWoW and Nampower feed per-trigger version-skew guards (a prototype
--- declaring `enable = function() return WA.hasNampower end`) rather than a
--- second load gate, so a missing mod degrades feature-by-feature.
---
--- All three are meant to hard-disable. The blocker is SUPERWOW_VERSION /
--- SUPERWOW_STRING: DoiteAuras only ever gates on GetNampowerVersion and never
--- reads a SuperWoW global, so neither name is confirmed on a live client. Probe
--- them in-game before making either one brick the load.
-WeakestAuras.hasClassicAPI = CLASSIC_API_VERSION ~= nil
-WeakestAuras.hasSuperWoW = (SUPERWOW_VERSION ~= nil) or (SUPERWOW_STRING ~= nil)
+-- ClassicAPI is the hard gate, in Bootstrap.lua. Nampower is optional: where it
+-- is installed, the swing timer reads the queued on-next-swing ability from its
+-- SPELL_QUEUE_EVENT instead of polling the warrior's action slots.
 WeakestAuras.hasNampower = type(GetNampowerVersion) == "function"
 
--- The .toc's `## Version`, resolved once. Nil rather than a fallback string when
--- the client cannot answer: everything version-facing reads this, and a
--- made-up number put on the addon channel would tell an up-to-date guild it is
--- behind. pfUI calls GetAddOnMetadata unguarded in its own load path
--- (../pfUI/pfUI.lua), so it is present here.
-WeakestAuras.version = GetAddOnMetadata and GetAddOnMetadata("WeakestAuras", "Version") or nil
+-- The .toc's `## Version`, resolved once.
+WeakestAuras.version = GetAddOnMetadata("WeakestAuras", "Version")
 
 -- The companion website. Shown in the options footer; there is no way to open
 -- a browser from this client, so every reference offers the URL as copyable
 -- text instead of a link.
 WeakestAuras.WEBSITE = "https://weako.xyz"
-
--- ClassicAPI packs its version as X*10000 + Y*100 + Z; untagged local builds
--- carry a sentinel meaning "newer than every release".
-local CLASSICAPI_DEV = 99999999
-
--- The oldest ClassicAPI whose feature set version gates can reason about.
--- Everything this addon calls unconditionally is assumed present from here on;
--- an API added in a later release must go through WeakestAuras.RequireClassicAPI
--- instead of a bare call. A client below this baseline predates that convention
--- entirely, so the options footer flags it as "update" rather than pretending
--- to know what it has.
-WeakestAuras.CLASSICAPI_BASELINE = 10911 -- 1.9.11
-
--- "X.Y.Z" from a packed ClassicAPI version, "dev" for the sentinel. With no
--- argument, the running client's own; nil when it cannot answer.
-function WeakestAuras.ClassicAPIVersionString(packed)
-	if packed == nil then packed = CLASSIC_API_VERSION end
-	if type(packed) ~= "number" then return nil end
-	if packed == CLASSICAPI_DEV then return "dev" end
-	return math.floor(packed / 10000) .. "."
-		.. math.floor(math.mod(packed, 10000) / 100) .. "."
-		.. math.mod(packed, 100)
-end
-
--- SuperWoW's version as a display string, nil when the mod is absent. Neither
--- global is confirmed on a live client (see the capability-probe note above),
--- so a present-but-versionless SuperWoW answers "" and callers show the bare
--- mod name.
-function WeakestAuras.SuperWoWVersionString()
-	if SUPERWOW_VERSION ~= nil then return tostring(SUPERWOW_VERSION) end
-	if type(SUPERWOW_STRING) == "string" then
-		local _, _, v = string.find(SUPERWOW_STRING, "(%d[%d%.]*)")
-		return v or ""
-	end
-	return nil
-end
 
 -- Nampower's version as "X.Y.Z", nil when absent or not answering.
 function WeakestAuras.NampowerVersionString()
@@ -113,56 +34,12 @@ function WeakestAuras.NampowerVersionString()
 	return major .. "." .. (minor or 0) .. "." .. (patch or 0)
 end
 
--- Feature gates against the client mods' versions. Each Require* answers
--- whether the running client has at least `minVersion` of its mod; false means
--- the caller must fall back gracefully. A false with a `label` is also
--- recorded, once per label, so the options footer can list what this client is
--- missing out on. ClassicAPI takes its own packed integer; SuperWoW and
--- Nampower take an "X.Y" / "X.Y.Z" string through ParseVersion.
 -- Where each client mod is kept. Offered as copyable text from the options
 -- footer, since this client cannot open a browser.
 WeakestAuras.MOD_SOURCES = {
 	{ mod = "ClassicAPI", url = "https://github.com/brues-code/ClassicAPI/releases/" },
-	{ mod = "SuperWoW", url = "https://github.com/balakethelock/SuperWoW/releases/tag/Release" },
 	{ mod = "Nampower", url = "https://github.com/Emyrk/nampower/releases/" },
 }
-
-WeakestAuras.degradedFeatures = {}
-local function recordDegraded(mod, needs, label)
-	if not label then return end
-	local list = WeakestAuras.degradedFeatures
-	for i = 1, table.getn(list) do
-		if list[i].label == label then return end
-	end
-	table.insert(list, { mod = mod, needs = needs, label = label })
-end
-
-function WeakestAuras.RequireClassicAPI(minVersion, label)
-	if type(CLASSIC_API_VERSION) == "number" and CLASSIC_API_VERSION >= minVersion then
-		return true
-	end
-	recordDegraded("ClassicAPI", WeakestAuras.ClassicAPIVersionString(minVersion) or "?", label)
-	return false
-end
-
--- A present mod whose version cannot be read still fails a version gate: the
--- feature stays off rather than running against an unprovable surface, and the
--- footer says which version would turn it on.
-function WeakestAuras.RequireSuperWoW(minVersion, label)
-	local have = WeakestAuras.ParseVersion(WeakestAuras.SuperWoWVersionString() or "")
-	local need = WeakestAuras.ParseVersion(minVersion)
-	if have and need and have >= need then return true end
-	recordDegraded("SuperWoW", tostring(minVersion), label)
-	return false
-end
-
-function WeakestAuras.RequireNampower(minVersion, label)
-	local have = WeakestAuras.ParseVersion(WeakestAuras.NampowerVersionString() or "")
-	local need = WeakestAuras.ParseVersion(minVersion)
-	if have and need and have >= need then return true end
-	recordDegraded("Nampower", tostring(minVersion), label)
-	return false
-end
 
 -- `x.y` or `x.y.z`, each part at most 999, packed into one comparable number.
 -- Anything else is nil: a version string reaching this also arrives from
@@ -190,127 +67,13 @@ function WeakestAuras.VersionNewer(a, b)
 	return packedA > packedB
 end
 
--- ---------------------------------------------------------------------------
--- Declared feature gates.
---
--- The Require* calls above answer a gate at the point of use, which is enough
--- to decide behaviour but not enough to TELL the user: a gate guarding a whole
--- region type is never reached on a client that fails it, because the region is
--- the thing that stops being built. So every gate this release knows about is
--- declared here and evaluated once at load, and the options footer lists what
--- an out-of-date client is missing whether or not the code behind it ever ran.
---
--- `minVersion` is inclusive: the first release carrying the feature. ClassicAPI
--- takes its packed integer, the others an "X.Y.Z" string.
--- ---------------------------------------------------------------------------
-
-WeakestAuras.FEATURE_GATES = {
-	-- ClassicAPI 1.9.11's texture transform measured vertex offsets against a
-	-- texcoord-cropped rect, which collapses every wedge whose texcoords span
-	-- less than the whole art -- i.e. all of them. Presence of SetVertexOffset
-	-- does not distinguish the two builds, so this cannot be a capability probe.
-	radialWedges = {
-		mod = "ClassicAPI", minVersion = 11000,
-		label = "Radial cooldown swipe and circular progress textures",
-	},
-	-- Inline |T...|t escapes in a FontString, and FontString rotation, which
-	-- the DLL applies under the same flag. 1.9.11 lays the escape out as
-	-- literal text.
-	inlineText = {
-		mod = "ClassicAPI", minVersion = 11000,
-		label = "Icons inside text (%i, coin art, raid markers) and rotated text",
-	},
-	-- ClassicAPI 1.11.0's Lua 5.1 backports. Two halves: a source-level rewrite
-	-- of the three constructs 5.0 cannot parse -- `#x`, `a % b`, and `...` read
-	-- as an expression -- co-hooking luaL_loadbuffer so loadstring gets it too,
-	-- which is the whole of how user Lua reaches the compiler here; and a
-	-- runtime hook resolving string methods (`s:gsub(...)`) through the string
-	-- table. What reads the gate is the WeakAuras2 import: a third of upstream's
-	-- custom code uses at least one of these forms. Only the parse-level
-	-- constructs can be filtered on a failing client -- a string-method call
-	-- parses on 5.0 and cannot be told from a table method by reading, so behind
-	-- this release it imports and errors where it stands.
-	luaSyntax51 = {
-		mod = "ClassicAPI", minVersion = 11100,
-		label = "Imported Lua using 5.1 syntax and string methods",
-	},
-}
-
--- The version a gate names, as the footer shows it.
-function WeakestAuras.FeatureGateNeeds(gate)
-	if gate.mod == "ClassicAPI" then
-		return WeakestAuras.ClassicAPIVersionString(gate.minVersion) or "?"
-	end
-	return tostring(gate.minVersion)
-end
-
--- A present mod whose version cannot be read fails its gates, same rule the
--- Require* functions apply: the feature stays off rather than running against
--- an unprovable surface.
-local function gateMet(gate)
-	if gate.mod == "ClassicAPI" then
-		if type(CLASSIC_API_VERSION) ~= "number" then return false end
-		return CLASSIC_API_VERSION >= gate.minVersion
-	end
-	local reported = gate.mod == "SuperWoW"
-		and WeakestAuras.SuperWoWVersionString()
-		or WeakestAuras.NampowerVersionString()
-	local have = WeakestAuras.ParseVersion(reported or "")
-	local need = WeakestAuras.ParseVersion(gate.minVersion)
-	if not (have and need) then return false end
-	return have >= need
-end
-
-function WeakestAuras.FeatureGate(key)
-	local gate = WeakestAuras.FEATURE_GATES[key]
-	if not gate then return true end
-	return gateMet(gate)
-end
-
--- Records every failing gate up front. recordDegraded dedupes by label, so a
--- Require* call later naming the same feature adds nothing.
---
--- A gate naming the dev sentinel is skipped: the degraded list is what tells a
--- user their client is behind this addon, and no release carries the feature
--- yet, so listing it would tell every user to go and get a build that does not
--- exist. It comes back the moment its minVersion names a real release.
-function WeakestAuras.EvaluateFeatureGates()
-	for _, gate in pairs(WeakestAuras.FEATURE_GATES) do
-		if not gateMet(gate) and gate.minVersion ~= CLASSICAPI_DEV then
-			recordDegraded(gate.mod, WeakestAuras.FeatureGateNeeds(gate), gate.label)
-		end
-	end
-end
-WeakestAuras.EvaluateFeatureGates()
-
--- ClassicAPI's texture corner transforms (SetVertexOffset/SetRotation), the
--- primitives behind the radial wedge spinner. Both halves are load-bearing: the
--- methods are engine bindings a version compare could miss on a dev build, and
--- the version gate catches the build that has them but places their offsets
--- wrongly. Everything radial reads this one flag and degrades off it -- the
--- swipe to its Model backend, a circular progress texture to the fallback
--- region -- so failing either half is a documented downgrade, not a broken
--- display.
-do
-	local probe = CreateFrame("Frame")
-	local tex = probe:CreateTexture(nil, "ARTWORK")
-	WeakestAuras.hasTextureTransforms =
-		type(tex.SetVertexOffset) == "function"
-		and type(tex.SetRotation) == "function"
-		and WeakestAuras.FeatureGate("radialWedges")
-	probe:Hide()
-end
-
 -- ClassicAPI's inline |T...|t texture escapes -- an icon drawn inside a run of
--- text. There is no method to test, so the probe is a width MEASUREMENT: a
--- client that does not honour the escape lays the texture path out character by
--- character, which is thirty-odd characters against one icon's ~one line, so
--- the two outcomes are an order of magnitude apart rather than a margin. The
--- measurement is authoritative because the DLL's width co-hook is gated on the
--- same live flag as its renderer -- a narrow reading means icons are rendering
--- right now, not merely that the DLL was built with the feature. That matters
--- because the feature has a runtime kill switch and an SEH latch that trips it
--- off after a fault, neither of which a version compare can see.
+-- text -- and FontString rotation, which the DLL applies inside the same
+-- g_inlineEnabled branch. The feature has a runtime kill switch and an SEH
+-- latch that trips it off after a fault, so the probe measures whether icons
+-- are rendering right now: a client that does not honour the escape lays the
+-- texture path out character by character, thirty-odd characters against one
+-- icon's ~one line.
 --
 -- Never call _classicapi_InlineTexEnable to find out. Called with no arguments
 -- it ENABLES the feature, so a probe would turn back on what the latch or the
@@ -327,20 +90,7 @@ do
 		local icon = fs:GetStringWidth() or 0
 		rendered = ref > 0 and icon > 0 and icon < ref
 	end
-	WeakestAuras.hasInlineText = rendered and WeakestAuras.FeatureGate("inlineText")
-
-	-- Its own probe, deliberately not folded into the flag above: this is an
-	-- ordinary engine binding that keeps working when the inline latch trips,
-	-- and code guarded by the wrong flag would fall back for no reason.
-	WeakestAuras.hasStringHeight = type(fs.GetStringHeight) == "function"
-
-	-- Rotation is the opposite case to GetStringHeight, and reads the inline
-	-- flag on purpose: the DLL applies FontString rotation inside the same
-	-- g_inlineEnabled branch as its inline renderer, so if the SEH latch trips
-	-- the feature off mid-session, rotated text silently returns to upright.
-	-- One gate, not two.
-	WeakestAuras.hasRotateText =
-		WeakestAuras.hasInlineText and type(fs.SetRotation) == "function"
+	WeakestAuras.hasInlineText = rendered
 	probe:Hide()
 end
 
@@ -375,13 +125,13 @@ WeakestAuras.multi_unit_labels = {
 }
 WeakestAuras.unit_tokens_multi = {}
 WeakestAuras.unit_labels_multi = {}
-for i = 1, table.getn(WeakestAuras.unit_tokens) do
+for i = 1, #WeakestAuras.unit_tokens do
 	table.insert(WeakestAuras.unit_tokens_multi, WeakestAuras.unit_tokens[i])
 end
 for key, label in pairs(WeakestAuras.unit_labels) do
 	WeakestAuras.unit_labels_multi[key] = label
 end
-for i = 1, table.getn(WeakestAuras.multi_unit_tokens) do
+for i = 1, #WeakestAuras.multi_unit_tokens do
 	local family = WeakestAuras.multi_unit_tokens[i]
 	table.insert(WeakestAuras.unit_tokens_multi, family)
 	WeakestAuras.unit_labels_multi[family] = WeakestAuras.multi_unit_labels[family]
@@ -395,7 +145,7 @@ end
 -- unit_tokens_multi.
 WeakestAuras.unit_tokens_aura = {}
 WeakestAuras.unit_labels_aura = {}
-for i = 1, table.getn(WeakestAuras.unit_tokens_multi) do
+for i = 1, #WeakestAuras.unit_tokens_multi do
 	table.insert(WeakestAuras.unit_tokens_aura, WeakestAuras.unit_tokens_multi[i])
 end
 for key, label in pairs(WeakestAuras.unit_labels_multi) do
@@ -557,7 +307,7 @@ function WeakestAuras.MultiSelectFields(fields, spec)
 		-- The mode row keeps its own row; the set starts on the next one.
 		table.insert(fields, { type = "space", useHeight = true, height = 0 })
 		local values = spec.values or {}
-		for i = 1, table.getn(values) do
+		for i = 1, #values do
 			local value = values[i]
 			table.insert(fields, {
 				type = "toggle", key = setKey .. "." .. tostring(value), half = true,
@@ -580,7 +330,7 @@ end
 -- index can be reused for another unit; the GUID keeps the allstates key tied
 -- to the unit while `state.unit` retains the live token used by Unit* APIs.
 function WeakestAuras.UnitCloneId(unit)
-	local guid = UnitGUID and UnitGUID(unit)
+	local guid = UnitGUID(unit)
 	return guid or unit
 end
 
@@ -592,7 +342,7 @@ function WeakestAuras.ForEachMultiUnit(unitType, fn)
 	if type(fn) ~= "function" then return end
 	local seen = {}
 	local function emit(unit)
-		if UnitExists and UnitExists(unit) then
+		if UnitExists(unit) then
 			local cloneId = WeakestAuras.UnitCloneId(unit)
 			if cloneId ~= nil and not seen[cloneId] then
 				seen[cloneId] = true
@@ -606,7 +356,7 @@ function WeakestAuras.ForEachMultiUnit(unitType, fn)
 		return
 	end
 
-	local raid = GetNumRaidMembers and (GetNumRaidMembers() or 0) or 0
+	local raid = GetNumRaidMembers()
 	if unitType == "raid" or (unitType == "group" and raid > 0) then
 		if raid > 40 then raid = 40 end
 		for i = 1, raid do emit("raid" .. i) end
@@ -615,7 +365,7 @@ function WeakestAuras.ForEachMultiUnit(unitType, fn)
 
 	if unitType == "party" or unitType == "group" then
 		emit("player")
-		local party = GetNumPartyMembers and (GetNumPartyMembers() or 0) or 0
+		local party = GetNumPartyMembers()
 		if party > 4 then party = 4 end
 		for i = 1, party do emit("party" .. i) end
 	end
@@ -637,7 +387,7 @@ function WeakestAuras.MultiUnitHasToken(unitType, unit)
 
 	if unitType == "nameplate" then return slot("^nameplate(%d+)$", 40) end
 
-	local raid = GetNumRaidMembers and (GetNumRaidMembers() or 0) or 0
+	local raid = GetNumRaidMembers()
 	if unitType == "raid" or (unitType == "group" and raid > 0) then
 		if raid > 40 then raid = 40 end
 		return slot("^raid(%d+)$", raid)
@@ -645,7 +395,7 @@ function WeakestAuras.MultiUnitHasToken(unitType, unit)
 
 	if unitType == "party" or unitType == "group" then
 		if unit == "player" then return true end
-		local party = GetNumPartyMembers and (GetNumPartyMembers() or 0) or 0
+		local party = GetNumPartyMembers()
 		if party > 4 then party = 4 end
 		return slot("^party(%d+)$", party)
 	end
@@ -658,7 +408,7 @@ end
 local nextCloneId = 0
 function WeakestAuras.GetUniqueCloneId(allstates)
 	for _ = 1, 1000000 do
-		nextCloneId = math.mod(nextCloneId + 1, 1000000)
+		nextCloneId = math.fmod(nextCloneId + 1, 1000000)
 		if not allstates or allstates[nextCloneId] == nil then return nextCloneId end
 	end
 	return nil

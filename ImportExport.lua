@@ -96,12 +96,11 @@ function WA.ExportRaw(id)
 	local payload = { m = "WeakestAuras", v = WA.version, d = cleanForExport(data) }
 	payload.mods = {
 		classicapi = WA.ClassicAPIVersionString(),
-		superwow = WA.SuperWoWVersionString(),
 		nampower = WA.NampowerVersionString(),
 	}
 	if WA.IsGroup(data) and data.controlledChildren then
 		payload.c = {}
-		for i = 1, table.getn(data.controlledChildren) do
+		for i = 1, #data.controlledChildren do
 			local child = WeakestAurasDB.displays[data.controlledChildren[i]]
 			if child then table.insert(payload.c, cleanForExport(child)) end
 		end
@@ -157,7 +156,7 @@ local function localPending(payload)
 		if type(payload.c) ~= "table" or not WA.IsGroup(root) then
 			return nil, "child displays require a group root"
 		end
-		for i = 1, table.getn(payload.c) do
+		for i = 1, #payload.c do
 			if type(payload.c[i]) ~= "table" then
 				return nil, "child display " .. i .. " is not a table"
 			end
@@ -197,14 +196,14 @@ function WA.ImportPreview(str)
 		-- travels untouched, so upgrading later does not re-run migrations the
 		-- author's build already applied.
 		local schema = pending.root.internalVersion or 0
-		for i = 1, table.getn(pending.children) do
+		for i = 1, #pending.children do
 			local v = pending.children[i].internalVersion or 0
 			if v > schema then schema = v end
 		end
 		local report = importReport(nil)
 		if schema > WA.SCHEMA_VERSION then report.schemaAhead = schema end
 		WA.CollectImportCode(pending.root, report, tostring(pending.root.id or "?") .. " - ")
-		for i = 1, table.getn(pending.children) do
+		for i = 1, #pending.children do
 			local child = pending.children[i]
 			WA.CollectImportCode(child, report, tostring(child.id or "?") .. " - ")
 		end
@@ -230,11 +229,11 @@ end
 
 local function canUpdatePending(pending)
 	return pending and pending.root and not WA.IsGroup(pending.root)
-		and table.getn(pending.children or {}) == 0
+		and #(pending.children or {}) == 0
 end
 
 local function removeId(list, id)
-	for i = table.getn(list or {}), 1, -1 do
+	for i = #(list or {}), 1, -1 do
 		if list[i] == id then table.remove(list, i) end
 	end
 end
@@ -256,7 +255,7 @@ local function installOne(data, parentId)
 end
 
 local function rollbackInstalled(installed)
-	for i = table.getn(installed), 1, -1 do
+	for i = #installed, 1, -1 do
 		local data = installed[i]
 		if data.parent then
 			local parent = WeakestAurasDB.displays[data.parent]
@@ -299,9 +298,9 @@ local function remapGlowFrames(data, byOldId)
 		end
 	end
 	local conditions = data.conditions
-	for n = 1, table.getn(conditions or {}) do
+	for n = 1, #(conditions or {}) do
 		local changes = conditions[n] and conditions[n].changes or {}
-		for c = 1, table.getn(changes) do
+		for c = 1, #changes do
 			if changes[c] and changes[c].property == "glowexternal" then
 				remapGlowFrame(changes[c].value, byOldId)
 			end
@@ -311,7 +310,7 @@ end
 
 local function remapChildIdKeys(installed, byOldId)
 	local prefix = WA.ANCHOR_AURA_PREFIX
-	for i = 1, table.getn(installed) do
+	for i = 1, #installed do
 		local data = installed[i]
 		if type(data.sortHybridTable) == "table" then
 			local remapped = {}
@@ -340,7 +339,7 @@ function WA.InstallPendingImport(pending)
 	end
 	if pending.confirmed then return nil, "import already confirmed" end
 	local root, children = pending.root, pending.children or {}
-	if table.getn(children) > 0 and not WA.IsGroup(root) then
+	if #children > 0 and not WA.IsGroup(root) then
 		return nil, "child displays require a group root"
 	end
 	local installed = {}
@@ -355,7 +354,7 @@ function WA.InstallPendingImport(pending)
 		table.insert(installed, root)
 		table.insert(WeakestAurasDB.order, id)
 		byOldId[rootOldId] = id
-		for i = 1, table.getn(children) do
+		for i = 1, #children do
 			local child = children[i]
 			local oldId, parentId = child.id, byOldId[child.parent] or id
 			child.parent = nil

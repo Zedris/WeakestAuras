@@ -1,5 +1,5 @@
 -- WeakestAuras -- radial wedge textures: the circular-progress primitive behind
--- the cooldown swipe and the circular progress texture orientations. Mirrors
+-- the circular progress texture orientations. Mirrors
 -- WA2's BaseRegions/TextureCoords.lua + BaseRegions/CircularProgressTexture.lua.
 --
 -- A wedge is drawn by moving the quad's four corners onto the region center
@@ -46,15 +46,6 @@ local exactAngles = {
 	{ 0.5, 1 }, { 0, 1 }, { 0, 0.5 }, { 0, 0 },
 }
 
--- Upstream writes `angle % 360`. Lua 5.0's math.mod keeps the dividend's sign
--- (math.mod(-30, 360) == -30 where 5.1's % gives 330), and angleToCoord's band
--- tests assume [0, 360) -- the +360 branch is load-bearing.
-local function normalizeAngle(angle)
-	angle = math.mod(angle, 360)
-	if angle < 0 then angle = angle + 360 end
-	return angle
-end
-
 local function tanDeg(angle)
 	return math.tan(math.rad(angle))
 end
@@ -62,8 +53,8 @@ end
 -- Angle (degrees, 0 at twelve o'clock, increasing clockwise) -> the point on
 -- the unit-square perimeter where a ray from the center at that angle exits.
 local function angleToCoord(angle)
-	angle = normalizeAngle(angle)
-	if math.mod(angle, 45) == 0 then
+	angle = angle % 360
+	if math.fmod(angle, 45) == 0 then
 		local index = math.floor(angle / 45) + 1
 		return exactAngles[index][1], exactAngles[index][2]
 	end
@@ -105,10 +96,6 @@ local function TransformPoint(x, y, scalex, scaley, texRotation, mirror_h, mirro
 	y = y + 0.5
 	return x + (user_x or 0), y + (user_y or 0)
 end
-
--- Published because the icon's cooldown edge has to reach the same perimeter
--- point the wedge's moving corner sits on, at any aspect ratio.
-WA.TextureCoords.AngleToCoord = angleToCoord
 
 -- Published because the progresstexture region's linear orientations crop,
 -- mirror and rotate through the same formula: one meaning for `crop_x` and
@@ -224,17 +211,11 @@ local spinnerFuncs = {}
 
 -- Changing what a wedge samples reaches the engine's own corner store, which
 -- writes back the plain axis-aligned quad, so the wedge shape has to be
--- rewritten after it. Both art setters own that rather than each caller: the
--- progresstexture region's texture setters happened to reach UpdateTextures on
--- their own path, the swipe's colour setter did not, and its wedges collapsed.
+-- rewritten after it. The art setter owns that rather than each caller, so a
+-- caller that never reaches UpdateTextures on its own path cannot leave the
+-- wedges collapsed.
 function spinnerFuncs.SetTexture(self, path)
 	for i = 1, 3 do self.textures[i]:SetTexture(path) end
-	self:UpdateTextures()
-end
-
--- Vanilla's numeric SetTexture form is a solid fill -- the swipe's dark wedges.
-function spinnerFuncs.SetSolidColor(self, r, g, b, a)
-	for i = 1, 3 do self.textures[i]:SetTexture(r, g, b, a) end
 	self:UpdateTextures()
 end
 
@@ -394,7 +375,6 @@ function spinnerFuncs.SetProgress(self, angle1, angle2)
 end
 
 function WA.Spinner.Create(frame, layer)
-	if not WA.hasTextureTransforms then return nil end
 	local spinner = {
 		textures = {},
 		coords = {},

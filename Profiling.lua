@@ -137,7 +137,7 @@ function P.Start()
 	startedAt = GetTime()
 	lastMem = nil
 	memTick()
-	if C_Timer and C_Timer.NewTicker then memTicker = C_Timer.NewTicker(1, memTick) end
+	memTicker = C_Timer.NewTicker(1, memTick)
 	install()
 	out("[prof] started (clock: " .. (hiRes and "debugprofilestop" or "GetTime, frame resolution") .. ")")
 end
@@ -183,15 +183,15 @@ function P.Report(limit)
 		churnKB, minutes > 0 and churnKB / minutes or 0))
 	out("[prof] keys nest: an event's time includes the displays and code it drove")
 	out("[prof]   total ms |  ms/min |  calls |  max ms | site")
-	local n = table.getn(rows)
+	local n = #rows
 	if n > limit then n = limit end
 	for i = 1, n do
 		local s = rows[i].s
 		out(string.format("[prof] %10.1f | %7.1f | %6d | %7.2f | %s",
 			s.total, s.total / minutes, s.n, s.max, rows[i].key))
 	end
-	if table.getn(rows) > n then
-		out("[prof] ... " .. (table.getn(rows) - n) .. " more; /wa prof report " .. table.getn(rows))
+	if #rows > n then
+		out("[prof] ... " .. (#rows - n) .. " more; /wa prof report " .. #rows)
 	end
 end
 

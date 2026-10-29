@@ -64,7 +64,7 @@ local ticker
 local function applyButtonOverlay(overlay, now)
 	overlay.bgFrame:Show()
 	overlay.antTex:Show()
-	for i = 1, table.getn(overlay.segments or {}) do
+	for i = 1, #(overlay.segments or {}) do
 		overlay.segments[i]:Hide()
 		if overlay.borders[i] then overlay.borders[i]:Hide() end
 	end
@@ -88,8 +88,7 @@ local function applyPixel(overlay, now)
 	local perimeter = 2 * (width + height)
 	if perimeter <= 0 then return end
 	for i = 1, lines do
-		local fraction = math.mod(phase + (i - 1) / lines, 1)
-		if fraction < 0 then fraction = fraction + 1 end
+		local fraction = (phase + (i - 1) / lines) % 1
 		local distance = fraction * perimeter
 		local segment = overlay.segments[i]
 		local border = overlay.borders[i]
@@ -125,7 +124,7 @@ local function applyPixel(overlay, now)
 			border:Show()
 		end
 	end
-	for i = lines + 1, table.getn(overlay.segments) do
+	for i = lines + 1, #overlay.segments do
 		overlay.segments[i]:Hide()
 		if overlay.borders[i] then overlay.borders[i]:Hide() end
 	end
@@ -133,7 +132,7 @@ end
 
 local function applyPixelColor(overlay, color)
 	local c = color or { 1, 1, 1, 1 }
-	for i = 1, table.getn(overlay.segments or {}) do
+	for i = 1, #(overlay.segments or {}) do
 		overlay.segments[i]:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
 		if overlay.borders[i] then overlay.borders[i]:SetVertexColor(0, 0, 0, c[4] or 1) end
 	end
@@ -159,7 +158,7 @@ local function tintOverlay(overlay, color)
 	if overlay.poolType == "Pixel" then
 		applyPixelColor(overlay, c)
 	elseif overlay.poolType == "ACShine" then
-		for i = 1, table.getn(overlay.particles or {}) do
+		for i = 1, #(overlay.particles or {}) do
 			overlay.particles[i]:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
 		end
 	elseif overlay.poolType == "Soft" or overlay.poolType == "Pulse" then
@@ -185,8 +184,7 @@ local function applyACShine(overlay, now)
 			local phase = now * frequency / group
 			for i = 1, count do
 				textureIndex = textureIndex + 1
-				local fraction = math.mod(i / count + phase, 1)
-				if fraction < 0 then fraction = fraction + 1 end
+				local fraction = (i / count + phase) % 1
 				local distance = fraction * perimeter
 				local x, y
 				if distance < width then
@@ -208,7 +206,7 @@ local function applyACShine(overlay, now)
 				particle:Show()
 			end
 		end
-		for i = textureIndex + 1, table.getn(overlay.particles) do overlay.particles[i]:Hide() end
+		for i = textureIndex + 1, #overlay.particles do overlay.particles[i]:Hide() end
 		return
 	end
 	local radiusX = width / 2
@@ -227,17 +225,17 @@ local function applyACShine(overlay, now)
 		particle:SetTexCoord(0, 1, 0, 1)
 		particle:Show()
 	end
-	for i = count + 1, table.getn(overlay.particles) do overlay.particles[i]:Hide() end
+	for i = count + 1, #overlay.particles do overlay.particles[i]:Hide() end
 end
 
 local function applySoft(overlay)
 	overlay.bgFrame:Hide()
 	overlay.antTex:Hide()
-	for i = 1, table.getn(overlay.segments or {}) do
+	for i = 1, #(overlay.segments or {}) do
 		overlay.segments[i]:Hide()
 		if overlay.borders[i] then overlay.borders[i]:Hide() end
 	end
-	for i = 1, table.getn(overlay.particles or {}) do overlay.particles[i]:Hide() end
+	for i = 1, #(overlay.particles or {}) do overlay.particles[i]:Hide() end
 	overlay.softTex:SetAlpha(1)
 	overlay.softTex:Show()
 end
@@ -391,7 +389,7 @@ end
 local function glowAnchorArea(parentData, subData)
 	local requested = subData.anchor_area
 	local values = proto.GetSubRegionAnchors(parentData, "area")
-	for i = 1, table.getn(values) do
+	for i = 1, #values do
 		if values[i] == requested then return requested end
 	end
 	return parentData.regionType == "progressbar" and "bar" or "region"
@@ -466,10 +464,10 @@ end
 -- aura must release its overlay, not leave one ticking off-screen).
 function WA.GetGlowPoolStats(glowType)
 	if glowType then
-		return table.getn(pools[glowType] or {})
+		return #(pools[glowType] or {})
 	end
 	local free = 0
-	for _, pool in pairs(pools) do free = free + table.getn(pool) end
+	for _, pool in pairs(pools) do free = free + #pool end
 	return numOverlays, free
 end
 
@@ -762,7 +760,7 @@ WA.RegisterSubRegionType("subglow", {
 			areaOnly = true,
 			areaTarget = glowAnchorArea(parentData, subData),
 		})
-		for i = 1, table.getn(anchorFields) do
+		for i = 1, #anchorFields do
 			if anchorFields[i].key == "anchor_area" then
 				anchorFields[i].get = function() return glowAnchorArea(parentData, subData) end
 			end

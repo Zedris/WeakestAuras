@@ -101,7 +101,7 @@ WA.RegisterSubRegionType("subborder", {
 			areaOnly = true, areaTarget = "region", x = subData.border_offset or 0,
 			y = subData.border_offset or 0,
 		})
-		for i = 1, table.getn(anchorFields) do table.insert(fields, anchorFields[i]) end
+		for i = 1, #anchorFields do table.insert(fields, anchorFields[i]) end
 		return fields
 	end,
 })

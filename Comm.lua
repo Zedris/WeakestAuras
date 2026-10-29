@@ -73,15 +73,13 @@ end
 -- here, and a five-aura group is ~25 chunks; putting that through a whole guild
 -- to serve one requester standing next to us is what this avoids.
 local function channelFor(name)
-	local n = GetNumRaidMembers and GetNumRaidMembers() or 0
-	for i = 1, n do
+	for i = 1, GetNumRaidMembers() do
 		if UnitName("raid" .. i) == name then return "RAID" end
 	end
-	n = GetNumPartyMembers and GetNumPartyMembers() or 0
-	for i = 1, n do
+	for i = 1, GetNumPartyMembers() do
 		if UnitName("party" .. i) == name then return "PARTY" end
 	end
-	if IsInGuild and IsInGuild() then return "GUILD" end
+	if IsInGuild() then return "GUILD" end
 	return nil
 end
 
@@ -222,7 +220,7 @@ local function answer(to, name)
 		return
 	end
 
-	nextSid = math.mod(nextSid + 1, 100)
+	nextSid = math.fmod(nextSid + 1, 100)
 	local sid = nextSid
 
 	-- Sliced against each message's own header rather than a fixed chunk size:
@@ -372,15 +370,14 @@ local function jitter(lo, hi)
 end
 
 local function groupChannel()
-	if (GetNumRaidMembers and GetNumRaidMembers() or 0) > 0 then return "RAID" end
-	if (GetNumPartyMembers and GetNumPartyMembers() or 0) > 0 then return "PARTY" end
+	if IsInRaid() then return "RAID" end
+	if IsInGroup() then return "PARTY" end
 	return nil
 end
 
 local function currentGroupSize()
-	local n = GetNumRaidMembers and GetNumRaidMembers() or 0
-	if n > 0 then return n end
-	return GetNumPartyMembers and GetNumPartyMembers() or 0
+	if IsInRaid() then return GetNumRaidMembers() end
+	return GetNumPartyMembers()
 end
 
 local function beacon(channel)
@@ -462,7 +459,7 @@ local function onBeaconEvent(e)
 		if loginBeaconDone then return end
 		loginBeaconDone = true
 		C_Timer.After(jitter(BEACON_LOGIN_MIN, BEACON_LOGIN_MAX), function()
-			if IsInGuild and IsInGuild() then WA.safecall("Comm.beacon", beacon, "GUILD") end
+			if IsInGuild() then WA.safecall("Comm.beacon", beacon, "GUILD") end
 			WA.safecall("Comm.beacon", beacon, groupChannel())
 		end)
 		return

@@ -282,7 +282,7 @@ function WA.CleanCustomVariables(variables)
 			table.insert(toRemove, k)
 		end
 	end
-	for i = 1, table.getn(toRemove) do
+	for i = 1, #toRemove do
 		variables[toRemove[i]] = nil
 	end
 
@@ -467,7 +467,7 @@ function WA.StartStopStateTimers(id, triggernum, states)
 			table.insert(toRemove, cloneId)
 		end
 	end
-	for i = 1, table.getn(toRemove) do
+	for i = 1, #toRemove do
 		local cloneId = toRemove[i]
 		cancelTimerRecord(triggerTimers[cloneId], cloneId)
 		triggerTimers[cloneId] = nil

@@ -2,7 +2,7 @@
 -- (registered with its trigger systems, allowed to show) based on data.load --
 -- class(es)/race/faction/level/zone/combat/group-size-or-type/stance/alive/
 -- mounted/on-taxi/name/realm/guild/spell-known/item-equipped. Mirrors WA2's
--- load system (§11), trimmed to the subset with a real 1.12+ClassicAPI/SuperWoW
+-- load system (§11), trimmed to the subset with a real 1.12+ClassicAPI
 -- data source: encounter, warmode, spec role and talent introspection have no
 -- API on this client.
 -- Upstream section refs (§N) point at design/architecture/weakauras2-reference.md
@@ -35,20 +35,14 @@ end
 -- Members in the current group (raid count, else party members + self). Drives
 -- the "group size" load constraint.
 local function groupSize()
-	local raid = GetNumRaidMembers and GetNumRaidMembers() or 0
-	if raid and raid > 0 then return raid end
-	local party = GetNumPartyMembers and GetNumPartyMembers() or 0
-	return party + 1
+	if IsInRaid() then return GetNumRaidMembers() end
+	return GetNumPartyMembers() + 1
 end
 
--- "solo"/"group"/"raid" -- mirrors WA2's Private.ExecEnv.GroupType(), which
--- uses IsInRaid()/IsInGroup() (not on this client); GetNumRaidMembers/
--- GetNumPartyMembers already distinguish the same three states.
+-- "solo"/"group"/"raid" -- mirrors WA2's Private.ExecEnv.GroupType().
 local function groupType()
-	local raid = GetNumRaidMembers and GetNumRaidMembers() or 0
-	if raid and raid > 0 then return "raid" end
-	local party = GetNumPartyMembers and GetNumPartyMembers() or 0
-	if party and party > 0 then return "group" end
+	if IsInRaid() then return "raid" end
+	if IsInGroup() then return "group" end
 	return "solo"
 end
 
@@ -59,22 +53,17 @@ local function substrMatch(hay, needle)
 	return string.find(string.lower(hay or ""), string.lower(needle), 1, true) ~= nil
 end
 
--- The instance-size bucket of the current moment, approximated: WA2's Instance
--- Size Type reads GetInstanceInfo, which this client does not have, so raid
--- head-count stands in for the raid sizes, the battleground comes off the queue
--- status (locale-proof, unlike zone names), and the native IsInInstance --
--- boolean-only on 1.12 -- separates "none" from a dungeon. Head-count is an
--- estimate by construction: a 22-strong Molten Core run reads "twentyfive"
--- until three more join. Bucket keys are upstream's, so an import lands
--- without renaming.
+-- The instance-size bucket of the current moment. GetInstanceInfo gives the
+-- instance type, but its maxPlayers is a per-type default (40 for every raid,
+-- ZG and Turtle's custom raids included), so raid head-count stands in for the
+-- raid sizes. Head-count is an estimate by construction: a 22-strong Molten
+-- Core run reads "twentyfive" until three more join. Bucket keys are
+-- upstream's, so an import lands without renaming.
 local function instanceSizeBucket()
-	if GetBattlefieldStatus then
-		for i = 1, (MAX_BATTLEFIELD_QUEUES or 3) do
-			if GetBattlefieldStatus(i) == "active" then return "pvp" end
-		end
-	end
-	if not (IsInInstance and IsInInstance()) then return "none" end
-	local raid = GetNumRaidMembers and GetNumRaidMembers() or 0
+	local _, instanceType = GetInstanceInfo()
+	if instanceType == "pvp" or instanceType == "arena" then return "pvp" end
+	if instanceType ~= "raid" then return instanceType end -- "none", "party"
+	local raid = GetNumRaidMembers()
 	if raid > 25 then return "fortyman" end
 	if raid > 20 then return "twentyfive" end
 	if raid > 10 then return "twenty" end
@@ -83,27 +72,13 @@ local function instanceSizeBucket()
 end
 
 WA.CLASS_TOKENS = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "SHAMAN", "MAGE", "WARLOCK", "DRUID" }
-WA.CLASS_LABELS = {
-	WARRIOR = "Warrior", PALADIN = "Paladin", HUNTER = "Hunter", ROGUE = "Rogue",
-	PRIEST = "Priest", SHAMAN = "Shaman", MAGE = "Mage", WARLOCK = "Warlock", DRUID = "Druid",
-}
--- Class-colored labels: WoW's `|cAARRGGBB...|r` escape codes render in any
--- plain FontString (dropdown option, checkbox label, ...), so no widget-level
--- change is needed to color-code the class picker -- just embed the codes in
--- the label text. RAID_CLASS_COLORS is a stock FrameXML global; falls back to
--- a plain label on the off chance it's missing.
+-- The class picker's labels: localized class names in their class colours.
+-- `|c...|r` escapes render in any plain FontString, so the dropdown needs no
+-- widget-level change.
+local classNames = FillLocalizedClassList({})
 WA.CLASS_COLOR_LABELS = {}
-for ti = 1, table.getn(WA.CLASS_TOKENS) do
-	local token = WA.CLASS_TOKENS[ti]
-	local label = WA.CLASS_LABELS[token] or token
-	local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[token]
-	if c then
-		local hex = string.format("ff%02x%02x%02x",
-			math.floor((c.r or 1) * 255 + 0.5), math.floor((c.g or 1) * 255 + 0.5), math.floor((c.b or 1) * 255 + 0.5))
-		WA.CLASS_COLOR_LABELS[token] = "|c" .. hex .. label .. "|r"
-	else
-		WA.CLASS_COLOR_LABELS[token] = label
-	end
+for _, token in ipairs(WA.CLASS_TOKENS) do
+	WA.CLASS_COLOR_LABELS[token] = C_ClassColor.GetClassColor(token):WrapTextInColorCode(classNames[token])
 end
 local COMBAT_VALUES = { "incombat", "outofcombat" }
 local COMBAT_LABELS = { incombat = "In Combat", outofcombat = "Out of Combat" }
@@ -118,7 +93,7 @@ local INGROUP_VALUES = { "solo", "group", "raid" }
 local INGROUP_LABELS = { solo = "Not in Group", group = "In Party", raid = "In Raid" }
 -- WA2's Private.instance_types, minus the flavors this client cannot be in
 -- (scenario, flexible, arena, rated anything) -- see instanceSizeBucket() for
--- how each is decided without GetInstanceInfo.
+-- how each is decided.
 local INSTANCE_SIZE_VALUES = { "none", "party", "ten", "twenty", "twentyfive", "fortyman", "pvp" }
 local INSTANCE_SIZE_LABELS = {
 	none = "No Instance", party = "Dungeon", ten = "Raid (up to 10)",
@@ -179,7 +154,7 @@ WA.loadPrototype = {
 		values = RACE_TOKENS, labels = RACE_LABELS, default = "Human",
 		isActive = function(L) return WA.MultiSelectMode(L, "race") ~= "off" end,
 		eval = function(L)
-			local token = UnitRaceBase and UnitRaceBase("player")
+			local token = UnitRaceBase("player")
 			return WA.MultiSelectMatches(L, "race", token)
 		end,
 	},
@@ -244,7 +219,7 @@ WA.loadPrototype = {
 		name = "mounted", display = "Mounted", widget = "select", optional = true,
 		values = MOUNTED_VALUES, labels = MOUNTED_LABELS, default = "mounted",
 		eval = function(L)
-			local m = IsMounted and IsMounted() and true or false
+			local m = IsMounted() and true or false
 			if L.mounted == "notmounted" then return not m end
 			return m
 		end,
@@ -253,7 +228,7 @@ WA.loadPrototype = {
 		name = "vehicle", display = "On Taxi", widget = "select", optional = true,
 		values = TAXI_VALUES, labels = TAXI_LABELS, default = "ontaxi",
 		eval = function(L)
-			local t = UnitOnTaxi and UnitOnTaxi("player") and true or false
+			local t = UnitOnTaxi("player") and true or false
 			if L.vehicle == "nottaxi" then return not t end
 			return t
 		end,
@@ -315,7 +290,7 @@ WA.loadPrototype = {
 local function evalLoad(data, skipOptional)
 	local L = data.load or {}
 	if L.never then return false end
-	for i = 1, table.getn(WA.loadPrototype) do
+	for i = 1, #WA.loadPrototype do
 		local arg = WA.loadPrototype[i]
 		if not (skipOptional and arg.optional) then
 			-- Most entries gate on a plain boolean use_<name>; a few (class's
@@ -379,7 +354,7 @@ local LOAD_EVENTS = {
 }
 
 local loadFrame = CreateFrame("Frame")
-for i = 1, table.getn(LOAD_EVENTS) do
+for i = 1, #LOAD_EVENTS do
 	pcall(loadFrame.RegisterEvent, loadFrame, LOAD_EVENTS[i])
 end
 -- UNIT_AURA fires for every visible unit's aura changes (very chatty in a

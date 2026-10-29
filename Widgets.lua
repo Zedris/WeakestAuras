@@ -155,7 +155,7 @@ function W.ListActions(list, index, onChanged, mutators)
 		end
 	end })
 	table.insert(actions, { icon = W.LIBWIDGETS_TEXTURES .. "down", tooltip = "Move Down", onClick = function()
-		if index < table.getn(list) then
+		if index < #list then
 			if mutators.moveDown then
 				mutators.moveDown(list, index)
 			else
@@ -236,10 +236,10 @@ function W.BarTextures()
 	if not W.barTextures then
 		W.barTextures = {}
 		local shared = LibWidgets.BAR_TEXTURES or {}
-		for i = 1, table.getn(shared) do
+		for i = 1, #shared do
 			table.insert(W.barTextures, shared[i])
 		end
-		for i = 1, table.getn(EXTRA_BAR_TEXTURES) do
+		for i = 1, #EXTRA_BAR_TEXTURES do
 			table.insert(W.barTextures, EXTRA_BAR_TEXTURES[i])
 		end
 	end
@@ -251,7 +251,7 @@ function W.BarTextureSwatches()
 	if not W.barSwatches then
 		W.barSwatches = {}
 		local list = W.BarTextures()
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			W.barSwatches[list[i]] = W.BarTexturePath(list[i])
 		end
 	end
@@ -275,14 +275,14 @@ W.LIBWIDGETS_REQUIRED = {
 	"LuaPadWithLinebreaks", "LuaNextToken", "NewCodeEditBox", "NewAnchorGrid",
 }
 W.libWidgetsMissing = {}
-for i = 1, table.getn(W.LIBWIDGETS_REQUIRED) do
+for i = 1, #W.LIBWIDGETS_REQUIRED do
 	local name = W.LIBWIDGETS_REQUIRED[i]
 	if not LibWidgets[name] then table.insert(W.libWidgetsMissing, name) end
 end
 
 -- One line describing which LibWidgets copy is live, or nil when it's fine.
 function W.LibWidgetsProblem()
-	if table.getn(W.libWidgetsMissing) == 0 then return nil end
+	if #W.libWidgetsMissing == 0 then return nil end
 	return "LibWidgets in use is MINOR " .. tostring(LibWidgets.MINOR or "?")
 		.. " and is missing " .. table.concat(W.libWidgetsMissing, ", ")
 		.. " -- another addon's older copy won the LibStub version race."
@@ -533,11 +533,11 @@ local powerAurasCategory
 local function powerAurasCategoryFor(name)
 	if not powerAurasCategory then
 		powerAurasCategory = {}
-		for i = 1, table.getn(TEXTURE_CATEGORY_VALUES) do
+		for i = 1, #TEXTURE_CATEGORY_VALUES do
 			local category = TEXTURE_CATEGORY_VALUES[i]
 			if TEXTURE_CATEGORY_DIRS[category] == "powerauras" then
 				local list = TEXTURE_CATEGORIES[category]
-				for j = 1, table.getn(list) do
+				for j = 1, #list do
 					powerAurasCategory[string.lower(list[j])] = category
 				end
 			end
@@ -612,15 +612,15 @@ local modelIndex
 local function modelListFor(category)
 	if not modelIndex then
 		modelIndex = {}
-		for i = 1, table.getn(MODEL_CATEGORY_VALUES) do
+		for i = 1, #MODEL_CATEGORY_VALUES do
 			modelIndex[MODEL_CATEGORY_VALUES[i]] = {}
 		end
-		for path in string.gfind(WA.wa2ModelIDs or "", "%d+,([^;]+)") do
+		for path in string.gmatch(WA.wa2ModelIDs or "", "%d+,([^;]+)") do
 			local _, _, top, rest = string.find(path, "^([^/]+)/(.+)$")
 			local list = top and modelIndex[top]
 			if list then table.insert(list, rest) end
 		end
-		for i = 1, table.getn(MODEL_CATEGORY_VALUES) do
+		for i = 1, #MODEL_CATEGORY_VALUES do
 			table.sort(modelIndex[MODEL_CATEGORY_VALUES[i]])
 		end
 	end
@@ -727,12 +727,12 @@ local function buildModelPicker()
 	previewBox:SetBackdropBorderColor(0.4, 0.4, 0.4, 0.8)
 	local previewApply = function(model)
 		if model.waPath then
-			-- A known creature entry textures the preview; the raw path is
-			-- the white fallback (skins live in CreatureDisplayInfo, which
-			-- SetModel never consults).
-			local entry = WA.ResolveCreatureEntry(model.waPath)
-			if entry and model.SetCreature then
-				pcall(model.SetCreature, model, entry)
+			-- A display that dresses the path textures the preview; the raw
+			-- path is the white fallback (skins live in CreatureDisplayInfo,
+			-- which SetModel never consults).
+			local display = WA.ResolveModelDisplay(model.waPath)
+			if display then
+				model:SetDisplayInfo(display)
 			else
 				pcall(model.SetModel, model, model.waPath)
 			end
@@ -804,7 +804,7 @@ local function buildModelPicker()
 	end
 
 	refresh = function()
-		local n = table.getn(filtered)
+		local n = #filtered
 		FauxScrollFrame_Update(scroll, n, MODEL_ROWS, MODEL_ROW_H)
 		local offset = FauxScrollFrame_GetOffset(scroll)
 		for i = 1, MODEL_ROWS do
@@ -831,10 +831,10 @@ local function buildModelPicker()
 		local all = modelListFor(selectedCategory)
 		filtered = {}
 		if not text or text == "" then
-			for i = 1, table.getn(all) do filtered[i] = all[i] end
+			for i = 1, #all do filtered[i] = all[i] end
 		else
 			local needle = string.lower(text)
-			for i = 1, table.getn(all) do
+			for i = 1, #all do
 				if string.find(all[i], needle, 1, true) then table.insert(filtered, all[i]) end
 			end
 		end
@@ -856,7 +856,7 @@ local function buildModelPicker()
 
 	local function scrollToSelected()
 		if not selectedRest then return end
-		for i = 1, table.getn(filtered) do
+		for i = 1, #filtered do
 			if filtered[i] == selectedRest then
 				local bar = getglobal(scrollName .. "ScrollBar")
 				if bar then
@@ -1250,7 +1250,7 @@ local function poolHitArea(page, onClick, tooltip)
 			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
 			GameTooltip:SetText(this.tipTitle, 1, 1, 1)
 			local lines = this.tipLines or EMPTY
-			for i = 1, table.getn(lines) do
+			for i = 1, #lines do
 				GameTooltip:AddLine(lines[i], 0.9, 0.9, 0.9, true)
 			end
 			GameTooltip:Show()
@@ -1577,7 +1577,7 @@ local function poolTipZone(page, f, label, x, y, h)
 			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
 			GameTooltip:SetText(this.tipTitle or "", 1, 1, 1)
 			local lines = this.tipLines or EMPTY
-			for i = 1, table.getn(lines) do
+			for i = 1, #lines do
 				GameTooltip:AddLine(lines[i], 0.9, 0.9, 0.9, true)
 			end
 			GameTooltip:Show()
@@ -1685,7 +1685,6 @@ local function placeField(page, f, x, y, w)
 				if not id then return nil end
 				-- C_Item.GetItemInfo's 18-value tuple, not the stock global's short
 				-- one: only the modern shape has the texture in slot 10.
-				if not (C_Item and C_Item.GetItemInfo) then return nil end
 				local _, _, _, _, _, _, _, _, _, ic = C_Item.GetItemInfo(id)
 				return ic
 			elseif f.type == "talent" then
@@ -1731,7 +1730,7 @@ local function placeField(page, f, x, y, w)
 		local label = poolLabel(page, f.name)
 		label:SetPoint("TOPLEFT", x, y)
 		poolTipZone(page, f, label, x, y, 14)
-		local n = table.getn(f.get() or EMPTY)
+		local n = #(f.get() or EMPTY)
 		local visibleRows = n < 2 and 2 or (n > 5 and 5 or n)
 		local rightInset = (page:GetWidth() or 400) - (x + w)
 		local frame = poolListEditor(page, f, x, y - lead, rightInset, visibleRows)
@@ -1789,7 +1788,7 @@ local function placeField(page, f, x, y, w)
 		label:SetPoint("TOPLEFT", x, y)
 		poolTipZone(page, f, label, x, y, 14)
 		local dw = w < 160 and w or 160
-		local actionCount = table.getn(f.actions or {})
+		local actionCount = #(f.actions or {})
 		if actionCount > 0 then
 			local actionW = actionCount * 16 + (actionCount - 1) * 6
 			local available = w - actionW - 6
@@ -1851,7 +1850,7 @@ local function placeField(page, f, x, y, w)
 		if sideW < 90 then sideW = 90 end
 		local sideY = y
 		local sideHeight = 0
-		for i = 1, table.getn(f.sideFields or {}) do
+		for i = 1, #(f.sideFields or {}) do
 			local used = placeField(page, f.sideFields[i], sideX, sideY, sideW)
 			sideY = sideY - used
 			sideHeight = sideHeight + used
@@ -1886,7 +1885,7 @@ function W.BuildOptions(page, fields)
 	-- paint had put there. This ordering has no such precondition.
 	for kind, pool in pairs(page.widgetPools) do
 		page.widgetUsed[kind] = 0
-		for i = 1, table.getn(pool) do pool[i]:Hide() end
+		for i = 1, #pool do pool[i]:Hide() end
 	end
 
 	local avail = page:GetWidth()
@@ -1910,7 +1909,7 @@ function W.BuildOptions(page, fields)
 		pending = nil
 	end
 
-	for i = 1, table.getn(fields) do
+	for i = 1, #fields do
 		local f = fields[i]
 		if f.type == "header" then
 			flushPending()
@@ -1930,7 +1929,7 @@ function W.BuildOptions(page, fields)
 				del:SetPoint("TOPRIGHT", page, "TOPLEFT", rightEdge, y + 2)
 				rightEdge = rightEdge - 16 - 6
 			end
-			for actionIndex = table.getn(f.actions or {}), 1, -1 do
+			for actionIndex = #(f.actions or {}), 1, -1 do
 				local action = f.actions[actionIndex]
 				local button = poolActionButton(page, action)
 				button:SetPoint("TOPRIGHT", page, "TOPLEFT", rightEdge, y + 2)
@@ -2093,12 +2092,12 @@ function paintMenu(f, items)
 	-- item from the previous opening on screen.
 	for kind, pool in pairs(f.widgetPools) do
 		f.widgetUsed[kind] = 0
-		for i = 1, table.getn(pool) do pool[i]:Hide() end
+		for i = 1, #pool do pool[i]:Hide() end
 	end
 
 	local width = MENU_MIN_W
 	local y = -MENU_PAD
-	for i = 1, table.getn(items) do
+	for i = 1, #items do
 		local item = items[i]
 		if item.separator then
 			local t = acquire(f, "menusep", function()

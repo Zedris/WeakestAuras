@@ -98,10 +98,10 @@ WA.ForeignApiNames = { myGUID = true }
 for name in pairs(weakAurasCompat) do WA.ForeignApiNames[name] = true end
 
 -- `myGUID` is a field upstream, not a call, and UnitGUID is not answerable at
--- file scope -- SuperWoW fills it in once the player exists. Resolved on the
+-- file scope -- it answers only once the player exists. Resolved on the
 -- miss so it is read at call time without a login hook of its own.
 customEnv.WeakAuras = setmetatable(weakAurasCompat, { __index = function(_, key)
-	if key == "myGUID" then return UnitGUID and UnitGUID("player") or nil end
+	if key == "myGUID" then return UnitGUID("player") end
 	return nil
 end })
 
@@ -113,9 +113,7 @@ end })
 -- so imported code calls them by bare name and they belong here for exactly the
 -- reason `WeakAuras` does.
 --
--- Same rule, too -- only what can be answered faithfully. `WA_ClassColorName`
--- cannot be: it reads `RAID_CLASS_COLORS[class].colorStr`, a field vanilla's
--- table does not carry, on a table not confirmed to exist here at all. It stays
+-- Same rule, too -- only what can be answered faithfully. Anything else stays
 -- absent and the import report names it instead (WA.AuraEnvNames is what tells
 -- the report which names are answered).
 -- ---------------------------------------------------------------------------
@@ -127,12 +125,12 @@ end })
 -- them. A token is yielded whether or not the unit exists, as upstream's does:
 -- the caller's own UnitExists check is the one an author wrote.
 local function iterateGroupMembers(reversed, forceParty)
-	local raid = GetNumRaidMembers and (GetNumRaidMembers() or 0) or 0
+	local raid = GetNumRaidMembers()
 	if raid > 40 then raid = 40 end
 	local prefix = (not forceParty and raid > 0) and "raid" or "party"
 	local count = raid
 	if prefix == "party" then
-		count = GetNumPartyMembers and (GetNumPartyMembers() or 0) or 0
+		count = GetNumPartyMembers()
 		if count > 4 then count = 4 end
 	end
 	local i = reversed and count or (prefix == "party" and 0 or 1)
@@ -146,48 +144,25 @@ local function iterateGroupMembers(reversed, forceParty)
 end
 customEnv.WA_IterateGroupMembers = iterateGroupMembers
 
--- Retail's aura tuple, which is what upstream's aura getters hand back:
--- `UnitAura(unit, index, filter)`'s fifteen named returns, in that order.
---
--- The order is not inferred -- BuffTrigger2 reads it positionally (§5,
--- `name, icon, stacks, debuffClass, duration, expirationTime, unitCaster,
--- isStealable, _, spellId, _, isBossDebuff, isCastByPlayer, _, modRate`) and
--- every position maps onto a named field of ClassicAPI's AuraData, the ones
--- vanilla has no concept of included: those are documented as constant `false`
--- (or `1` for timeMod) rather than absent, so an author reading position 8 gets
--- the same answer they would on a retail client with nothing stealable.
---
--- `castByPlayer` (13) is derived rather than taken from its stub: AuraData
--- carries `sourceUnit`, so the question is answerable, and a constant false
--- would silently fail every "did I cast this" branch. It degrades the way
--- ClassicAPI's own PLAYER filter does -- an aura already up before its cast was
--- observed has no caster and reads false.
---
--- **Position 16 onward is the aura's `points` values, and this client has
--- none.** A caller reading that far gets nothing back, which is the honest
--- answer and the one the corpus's single such caller already guards with `or ""`.
-local function unpackAura(aura)
-	if not aura then return nil end
-	return aura.name, aura.icon, aura.applications, aura.dispelName,
-		aura.duration, aura.expirationTime, aura.sourceUnit, aura.isStealable,
-		aura.nameplateShowPersonal, aura.spellId, aura.canApplyAura, aura.isBossAura,
-		aura.sourceUnit == "player", aura.nameplateShowAll, aura.timeMod
-end
-
 -- Upstream's "the first aura on this unit matching a name or a spell id", with
 -- its filter argument passed through untouched: ClassicAPI takes the modern
 -- AuraFilters format -- `|`-separated tokens, `!` negation, HELPFUL/HARMFUL/
 -- PLAYER/DISPELLABLE/CROWD_CONTROL honoured and the rest accepted and ignored --
 -- which is the same string upstream builds. A filter naming neither polarity
--- gets HELPFUL added, as upstream's does.
+-- gets HELPFUL added, as upstream's does. The result is retail's fifteen-value
+-- aura tuple, unpacked the way upstream does on retail. Position 16 onward is
+-- the aura's `points` values, and this client has none.
+local auraSlots = {}
 local function getUnitAura(unit, spell, filter)
 	if filter and not string.find(string.upper(filter), "FUL") then
 		filter = filter .. "|HELPFUL"
 	end
-	for i = 1, 255 do
-		local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
-		if not aura then return nil end
-		if spell == aura.spellId or spell == aura.name then return unpackAura(aura) end
+	local _, n = C_UnitAuras.GetAuraSlots(unit, filter, nil, nil, auraSlots)
+	for i = 1, n do
+		local name, _, _, _, _, _, _, _, _, spellId = C_UnitAuras.UnitAuraBySlot(unit, auraSlots[i])
+		if spell == spellId or spell == name then
+			return AuraUtil.UnpackAuraData(C_UnitAuras.GetAuraDataBySlot(unit, auraSlots[i]))
+		end
 	end
 end
 customEnv.WA_GetUnitAura = getUnitAura
@@ -198,12 +173,23 @@ customEnv.WA_GetUnitDebuff = function(unit, spell, filter)
 	return getUnitAura(unit, spell, filter and (filter .. "|HARMFUL") or "HARMFUL")
 end
 
+-- Upstream's: the unit's name in its class colour, "" for no unit. ClassicAPI
+-- gives every RAID_CLASS_COLORS entry the retail `colorStr`.
+customEnv.WA_ClassColorName = function(unit)
+	if not (unit and UnitExists(unit)) then return "" end
+	local name = UnitName(unit)
+	local _, class = UnitClass(unit)
+	if not class then return name end
+	return "|c" .. RAID_CLASS_COLORS[class].colorStr .. name .. "|r"
+end
+
 -- The `WA_` names above, for the import report. Anything else an author calls
 -- under that prefix is either one of upstream's this addon does not answer or
 -- their own helper, and the report says which by looking for a definition.
 WA.AuraEnvNames = {
 	WA_IterateGroupMembers = true,
 	WA_GetUnitAura = true, WA_GetUnitBuff = true, WA_GetUnitDebuff = true,
+	WA_ClassColorName = true,
 }
 
 -- ---------------------------------------------------------------------------
@@ -233,7 +219,7 @@ local stack, depth = {}, 0
 local function buildChildEnvs(data)
 	local envs = {}
 	local children = data.controlledChildren or {}
-	for i = 1, table.getn(children) do
+	for i = 1, #children do
 		if WeakestAurasDB.displays[children[i]] then
 			envs[i] = WA.ActivateAuraEnv(children[i], nil, nil, nil, true)
 			WA.DeactivateAuraEnv()
@@ -466,9 +452,8 @@ end
 
 -- The same sandwich with the function's whole return list packed into an array,
 -- for a caller that wants N values (custom text, whose every return is a %c).
--- 5.0's xpcall takes no call arguments, so the call is a closure either way;
--- this one packs instead of keeping the first value. Delegating rather than
--- re-spelling keeps the push/pop at one site.
+-- safecall keeps only the first value, so the packing happens in a closure.
+-- Delegating rather than re-spelling keeps the push/pop at one site.
 function WA.RunAuraFuncPacked(who, errTag, fn, a1, a2, a3, a4, a5, a6, a7)
 	local packed
 	local ok = WA.RunAuraFunc(who, errTag, function()

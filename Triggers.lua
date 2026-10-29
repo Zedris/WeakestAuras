@@ -81,7 +81,7 @@ function WA.TriggerTypeFields(data, t)
 	end
 
 	local catKeys, catLabels = {}, {}
-	for i = 1, table.getn(CATEGORIES) do
+	for i = 1, #CATEGORIES do
 		catKeys[i] = CATEGORIES[i].key
 		catLabels[CATEGORIES[i].key] = CATEGORIES[i].name
 	end
@@ -91,14 +91,14 @@ function WA.TriggerTypeFields(data, t)
 		values = catKeys, labels = catLabels,
 		get = function() return categoryOf(t.type) end,
 		set = function(v)
-			for i = 1, table.getn(CATEGORIES) do
+			for i = 1, #CATEGORIES do
 				if CATEGORIES[i].key == v then switchTo(CATEGORIES[i].default); return end
 			end
 		end,
 	} }
 
 	local types, typeLabels = triggerTypeList(categoryOf(t.type))
-	if table.getn(types) > 1 then
+	if #types > 1 then
 		table.insert(fields, {
 			type = "select", name = "Type", key = "type",
 			values = types, labels = typeLabels,
@@ -160,7 +160,7 @@ WA.RegisterTriggerType("aura", {
 		local t = WA.GetTrigger(data, 1)
 		if not t then return "" end
 		local kind = t.debuffType == "HARMFUL" and "Debuff" or (t.debuffType == "BOTH" and "Aura" or "Buff")
-		local n = t.auranames and table.getn(t.auranames) or 0
+		local n = t.auranames and #t.auranames or 0
 		local spell = (n > 0 and t.auranames[1] ~= "") and t.auranames[1] or "?"
 		if n > 1 then spell = spell .. " (+" .. (n - 1) .. ")" end
 		return kind .. ": " .. spell .. " (" .. WA.TriggerUnit(t, "player") .. ")"
@@ -228,7 +228,7 @@ WA.RegisterTriggerType("aura", {
 				set = function(v) t.castByPlayer = v; WA.Add(data) end,
 			},
 		}
-		for i = 1, table.getn(more) do table.insert(fields, more[i]) end
+		for i = 1, #more do table.insert(fields, more[i]) end
 		table.insert(fields, {
 			type = "toggle", name = "Dispel Type", key = "use_debuffClass",
 			get = function() return t.use_debuffClass end,

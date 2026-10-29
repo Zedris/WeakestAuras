@@ -180,7 +180,7 @@ local function validateUserConfig(data, options, config)
 	options = options or {}
 	config = config or {}
 
-	for index = 1, table.getn(options) do
+	for index = 1, #options do
 		local option = options[index]
 		if not customOptionIsValid(option) or authorOptionKeys[option.key] then
 			reportCorruptOption(data, index)
@@ -206,10 +206,10 @@ local function validateUserConfig(data, options, config)
 					end
 					if invalidArray then clearTable(subConfig) end
 					if option.limitType == "fixed" then
-						for i = table.getn(subConfig) + 1, option.size do subConfig[i] = {} end
+						for i = #subConfig + 1, option.size do subConfig[i] = {} end
 					end
 					if option.limitType ~= "none" then
-						for i = option.size + 1, table.getn(subConfig) do subConfig[i] = nil end
+						for i = option.size + 1, #subConfig do subConfig[i] = nil end
 					end
 					for _, toValidate in pairs(subConfig) do
 						validateUserConfig(data, subOptions, toValidate)
@@ -246,14 +246,14 @@ local function validateUserConfig(data, options, config)
 						config[key] = option.step * round((value - min) / option.step) + min
 					end
 				elseif option.type == "select" then
-					if value < 1 or value > table.getn(option.values) then config[key] = copyDefault(option) end
+					if value < 1 or value > #option.values then config[key] = copyDefault(option) end
 				elseif option.type == "multiselect" then
 					local multiselect = config[key]
 					if type(multiselect) ~= "table" then
 						config[key] = {}
 						multiselect = config[key]
 					end
-					for i = 1, table.getn(multiselect) do
+					for i = 1, #multiselect do
 						if option.default[i] ~= nil then
 							if type(multiselect[i]) ~= "boolean" then multiselect[i] = option.default[i] end
 						else
@@ -261,7 +261,7 @@ local function validateUserConfig(data, options, config)
 						end
 					end
 					if type(option.default) ~= "table" then option.default = {} end
-					for i = 1, table.getn(option.default) do
+					for i = 1, #option.default do
 						if type(multiselect[i]) ~= "boolean" then multiselect[i] = option.default[i] end
 					end
 				elseif option.type == "color" then
@@ -278,7 +278,7 @@ local function validateUserConfig(data, options, config)
 		end
 	end
 
-	for i = table.getn(options), 1, -1 do
+	for i = #options, 1, -1 do
 		if corruptOptions[i] then table.remove(options, i) end
 	end
 end
@@ -328,7 +328,7 @@ end
 -- The labels decide the order; the values ride along.
 local function sortedByLabel(values, labels)
 	local order = {}
-	for i = 1, table.getn(values) do order[i] = values[i] end
+	for i = 1, #values do order[i] = values[i] end
 	table.sort(order, function(first, second)
 		return tostring((labels and labels[first]) or first)
 			< tostring((labels and labels[second]) or second)
@@ -343,7 +343,7 @@ end
 
 local function selectFields(fields, data, option, config)
 	local values, labels = {}, {}
-	for i = 1, table.getn(option.values or {}) do
+	for i = 1, #(option.values or {}) do
 		values[i] = i
 		labels[i] = option.values[i]
 	end
@@ -381,7 +381,7 @@ local function mediaField(fields, data, option, config)
 		})
 	elseif mediaType == "font" and WA.textCore and WA.textCore.FONTS then
 		local values, labels = {}, {}
-		for i = 1, table.getn(WA.textCore.FONTS) do
+		for i = 1, #WA.textCore.FONTS do
 			local font = WA.textCore.FONTS[i]
 			values[i] = font.path
 			labels[font.path] = font.name
@@ -465,9 +465,9 @@ local function simpleOptionField(fields, data, option, config)
 		-- own position: the stored value is a positional array of booleans, so the
 		-- sort is a view and never reaches the config.
 		local order = {}
-		for i = 1, table.getn(option.values or {}) do order[i] = i end
+		for i = 1, #(option.values or {}) do order[i] = i end
 		if option.sortAlphabetically then order = sortedByLabel(order, option.values) end
-		for position = 1, table.getn(order) do
+		for position = 1, #order do
 			local i = order[position]
 			local index = i
 			table.insert(fields, {
@@ -515,7 +515,7 @@ end
 local function authorKeyIsAvailable(data, option, key, options)
 	if not key or key == "" then return false end
 	options = options or data.authorOptions or {}
-	for i = 1, table.getn(options) do
+	for i = 1, #options do
 		local other = options[i]
 		if other ~= option and other.key == key then return false end
 	end
@@ -527,7 +527,7 @@ local function ensureUniqueAuthorKey(candidate, suffix, options, index)
 	local key = candidate
 	local existingKeys = {}
 	local goodKey = true
-	for i = 1, table.getn(options or {}) do
+	for i = 1, #(options or {}) do
 		local option = options[i]
 		if option and option.key then existingKeys[option.key] = true end
 	end
@@ -630,10 +630,10 @@ local authorMediaLabels = {
 -- changes something the author never touched.
 local function authorMediaTypeValues(option)
 	local values = {}
-	for i = 1, table.getn(authorMediaTypes) do values[i] = authorMediaTypes[i] end
+	for i = 1, #authorMediaTypes do values[i] = authorMediaTypes[i] end
 	local current = option.mediaType
 	if current then
-		for i = 1, table.getn(values) do
+		for i = 1, #values do
 			if values[i] == current then return values end
 		end
 		table.insert(values, current)
@@ -649,7 +649,7 @@ local function authorMediaValues(option)
 		values = WA.SoundValues or {}
 		labels = WA.sound_types or {}
 	elseif mediaType == "font" and WA.textCore and WA.textCore.FONTS then
-		for i = 1, table.getn(WA.textCore.FONTS) do
+		for i = 1, #WA.textCore.FONTS do
 			local font = WA.textCore.FONTS[i]
 			values[i] = font.path
 			labels[font.path] = font.name
@@ -657,7 +657,7 @@ local function authorMediaValues(option)
 	elseif mediaType == "statusbar" and WA.Widgets and WA.Widgets.BarTextures then
 		values = WA.Widgets.BarTextures()
 		labels = {}
-		for i = 1, table.getn(values) do labels[values[i]] = values[i] end
+		for i = 1, #values do labels[values[i]] = values[i] end
 	end
 	return values, labels
 end
@@ -675,7 +675,7 @@ local function authorMediaFields(fields, data, option, index)
 	}, index, "mediaType"))
 
 	local values, labels = authorMediaValues(option)
-	if table.getn(values) > 0 then
+	if #values > 0 then
 		local field = {
 			type = "select", name = "Default", values = values, labels = labels,
 			half = false,
@@ -684,7 +684,7 @@ local function authorMediaFields(fields, data, option, index)
 		}
 		if option.mediaType == "sound" then
 			field.previews = {}
-			for i = 1, table.getn(values) do
+			for i = 1, #values do
 				local value = values[i]
 				if value ~= " custom" and value ~= " KitID" then field.previews[value] = true end
 			end
@@ -704,11 +704,11 @@ end
 
 local function normalizeMultiselectDefault(option)
 	if type(option.default) ~= "table" then option.default = {} end
-	local count = table.getn(option.values or {})
+	local count = #(option.values or {})
 	for i = 1, count do
 		if type(option.default[i]) ~= "boolean" then option.default[i] = false end
 	end
-	for i = table.getn(option.default), count + 1, -1 do option.default[i] = nil end
+	for i = #option.default, count + 1, -1 do option.default[i] = nil end
 end
 
 local function reorderMultiselectDefault(option, fromIndex, before)
@@ -734,7 +734,7 @@ local function authorMultiselectFields(fields, data, option, index)
 			authorOptionChanged(data)
 		end,
 		onAdd = function()
-			table.insert(option.default, table.getn(option.values), false)
+			table.insert(option.default, #option.values, false)
 			authorOptionChanged(data)
 		end,
 	}, index, "values")
@@ -742,7 +742,7 @@ local function authorMultiselectFields(fields, data, option, index)
 	authorSortToggle(fields, data, option, index)
 
 	normalizeMultiselectDefault(option)
-	for valueIndex = 1, table.getn(option.values or {}) do
+	for valueIndex = 1, #(option.values or {}) do
 		local i = valueIndex
 		table.insert(fields, authorField({
 			type = "toggle", name = "Default: " .. tostring(option.values[i]), half = true,
@@ -808,7 +808,7 @@ local function authorSimpleTypeFields(fields, data, option, index)
 		}, index, "default"))
 	elseif optionType == "select" then
 		local values, labels = {}, {}
-		for valueIndex = 1, table.getn(option.values or {}) do
+		for valueIndex = 1, #(option.values or {}) do
 			values[valueIndex] = valueIndex
 			labels[valueIndex] = option.values[valueIndex]
 		end
@@ -891,7 +891,7 @@ local function authorGroupFields(fields, data, option, index)
 	local nameSources, nameSourceLabels = {-1, 0}, {
 		[-1] = "Fixed Names", [0] = "Entry Order",
 	}
-	for subIndex = 1, table.getn(option.subOptions or {}) do
+	for subIndex = 1, #(option.subOptions or {}) do
 		local subOption = option.subOptions[subIndex]
 		if subOption and (subOption.type == "input" or subOption.type == "number"
 			or subOption.type == "range" or option.nameSource == subIndex) then
@@ -996,7 +996,7 @@ end
 
 local function copyOptionPath(path, value)
 	local copy = {}
-	for i = 1, table.getn(path) do copy[i] = path[i] end
+	for i = 1, #path do copy[i] = path[i] end
 	table.insert(copy, value)
 	return copy
 end
@@ -1036,15 +1036,15 @@ local function initReferences(mergedOption, data, options, index, config, path, 
 			subConfig = config[mergedOption.key]
 		else
 			local configList = config[mergedOption.key]
-			local count = type(configList) == "table" and table.getn(configList) or 0
+			local count = type(configList) == "table" and #configList or 0
 			local page = getArrayPage(data, path, count)
 			subConfig = type(configList) == "table" and configList[page] or nil
 		end
 	end
 	local subOptions = options[index].subOptions
-	for i = 1, table.getn(mergedOption.subOptions) do
+	for i = 1, #mergedOption.subOptions do
 		local subPath = {}
-		for j = 1, table.getn(path) do subPath[j] = path[j] end
+		for j = 1, #path do subPath[j] = path[j] end
 		table.insert(subPath, i)
 		initReferences(mergedOption.subOptions[i], data, subOptions, i,
 			subConfig, subPath, mergedOption)
@@ -1055,14 +1055,14 @@ local function mergeOptions(mergedOptions, data, options, config, prepath, paren
 	local nextInsert = 1
 	prepath = prepath or {}
 	options = options or {}
-	for i = 1, table.getn(options) do
+	for i = 1, #options do
 		local path = {}
-		for j = 1, table.getn(prepath) do path[j] = prepath[j] end
+		for j = 1, #prepath do path[j] = prepath[j] end
 		table.insert(path, i)
 		local nextOption = options[i]
 		local shouldMerge = false
 		if not nextOption.noMerge then
-			for j = nextInsert, table.getn(mergedOptions) + 1 do
+			for j = nextInsert, #mergedOptions + 1 do
 				local mergedOption = mergedOptions[j]
 				if not mergedOption then break end
 				local validMerge = not mergedOption.noMerge
@@ -1096,7 +1096,7 @@ local function mergeOptions(mergedOptions, data, options, config, prepath, paren
 							subConfig = config[mergedOption.key]
 						else
 							local configList = config[mergedOption.key]
-							local count = type(configList) == "table" and table.getn(configList) or 0
+							local count = type(configList) == "table" and #configList or 0
 							local page = getArrayPage(data, path, count)
 							subConfig = type(configList) == "table" and configList[page] or nil
 						end
@@ -1120,7 +1120,7 @@ local function mergeOptions(mergedOptions, data, options, config, prepath, paren
 				end
 			end
 		else
-			nextInsert = table.getn(mergedOptions) + 1
+			nextInsert = #mergedOptions + 1
 			local newOption = WA.DeepCopy(nextOption)
 			initReferences(newOption, data, options, i, config, path, parent)
 			table.insert(mergedOptions, nextInsert, newOption)
@@ -1147,7 +1147,7 @@ local function referenceConfig(reference)
 		list = {}
 		parentReference.config[parentOption.key] = list
 	end
-	local page = getArrayPage(reference.data, parentReference.path, table.getn(list))
+	local page = getArrayPage(reference.data, parentReference.path, #list)
 	list[page] = list[page] or {}
 	reference.config = list[page]
 	return reference.config
@@ -1263,7 +1263,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 	local firstConfig = first and first.config or config
 	local firstEntries = references and firstConfig and firstConfig[firstOption.key]
 	if type(firstEntries) ~= "table" then firstEntries = arrayEntries(config, option) end
-	local count = table.getn(firstEntries)
+	local count = #firstEntries
 	local values, labels = {}, {}
 
 	local function referenceEntries(reference)
@@ -1280,7 +1280,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 			result = 0
 			for _, reference in pairs(references) do
 				local entries = referenceEntries(reference)
-				if table.getn(entries) > result then result = table.getn(entries) end
+				if #entries > result then result = #entries end
 			end
 		end
 		return result
@@ -1310,11 +1310,11 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 
 	local function referencePage(reference)
 		local entries = referenceEntries(reference)
-		return getArrayPage(reference.data, reference.path, table.getn(entries))
+		return getArrayPage(reference.data, reference.path, #entries)
 	end
 
 	local function currentPage()
-		if not references then return getArrayPage(data, path, table.getn(arrayEntries(config, option))) end
+		if not references then return getArrayPage(data, path, #(arrayEntries(config, option))) end
 		local page, found = nil, false
 		for _, reference in pairs(references) do
 			local current = referencePage(reference)
@@ -1351,7 +1351,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 		if references then
 			for _, reference in pairs(references) do
 				local entries, childOption = referenceEntries(reference)
-				if childOption.limitType ~= "none" and table.getn(entries) >= (tonumber(childOption.size) or 0) then
+				if childOption.limitType ~= "none" and #entries >= (tonumber(childOption.size) or 0) then
 					canAdd = false
 				end
 			end
@@ -1363,17 +1363,17 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				if references then
 					for _, reference in pairs(references) do
 						local current, childOption = referenceEntries(reference)
-						if childOption.limitType == "none" or table.getn(current) < (tonumber(childOption.size) or 0) then
+						if childOption.limitType == "none" or #current < (tonumber(childOption.size) or 0) then
 							table.insert(current, {})
-							setArrayPage(reference.data, reference.path, table.getn(current))
+							setArrayPage(reference.data, reference.path, #current)
 						end
 					end
 					arrayReferenceChanged(option)
 				else
 					local current = arrayEntries(config, option)
-					if option.limitType ~= "none" and table.getn(current) >= (tonumber(option.size) or 0) then return end
+					if option.limitType ~= "none" and #current >= (tonumber(option.size) or 0) then return end
 					table.insert(current, {})
-					setArrayPage(data, path, table.getn(current))
+					setArrayPage(data, path, #current)
 					arrayConfigChanged(data)
 				end
 			end)
@@ -1394,7 +1394,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				arrayReferenceChanged(option)
 			else
 				local current = arrayEntries(config, option)
-				local page = getArrayPage(data, path, table.getn(current))
+				local page = getArrayPage(data, path, #current)
 				if page <= 1 or not current[page] then return end
 				current[page], current[page - 1] = current[page - 1], current[page]
 				setArrayPage(data, path, page - 1)
@@ -1406,7 +1406,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				for _, reference in pairs(references) do
 					local current = referenceEntries(reference)
 					local page = referencePage(reference)
-					if page < table.getn(current) and current[page] then
+					if page < #current and current[page] then
 						current[page], current[page + 1] = current[page + 1], current[page]
 						setArrayPage(reference.data, reference.path, page + 1)
 					end
@@ -1414,8 +1414,8 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				arrayReferenceChanged(option)
 			else
 				local current = arrayEntries(config, option)
-				local page = getArrayPage(data, path, table.getn(current))
-				if page >= table.getn(current) or not current[page] then return end
+				local page = getArrayPage(data, path, #current)
+				if page >= #current or not current[page] then return end
 				current[page], current[page + 1] = current[page + 1], current[page]
 				setArrayPage(data, path, page + 1)
 				arrayConfigChanged(data)
@@ -1429,18 +1429,18 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				for _, reference in pairs(references) do
 					local current = referenceEntries(reference)
 					local page = referencePage(reference)
-					if table.getn(current) > 0 then
+					if #current > 0 then
 						table.remove(current, page)
-						setArrayPage(reference.data, reference.path, math.min(page, table.getn(current)))
+						setArrayPage(reference.data, reference.path, math.min(page, #current))
 					end
 				end
 				arrayReferenceChanged(option)
 			else
 				local current = arrayEntries(config, option)
-				local page = getArrayPage(data, path, table.getn(current))
-				if table.getn(current) == 0 then return end
+				local page = getArrayPage(data, path, #current)
+				if #current == 0 then return end
 				table.remove(current, page)
-				local newCount = table.getn(current)
+				local newCount = #current
 				setArrayPage(data, path, newCount > 0 and math.min(page, newCount) or 1)
 				arrayConfigChanged(data)
 			end
@@ -1462,7 +1462,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 				arrayReferenceChanged(option)
 			else
 				local current = arrayEntries(config, option)
-				local page = getArrayPage(data, path, table.getn(current))
+				local page = getArrayPage(data, path, #current)
 				if not current[page] then return end
 				current[page] = {}
 				arrayConfigChanged(data)
@@ -1484,7 +1484,7 @@ local function arrayGroupFields(fields, data, option, config, path, indent)
 end
 
 local function annotateFields(fields, start, indent, key, value)
-	for i = start + 1, table.getn(fields) do
+	for i = start + 1, #fields do
 		if indent and indent > 0 then fields[i].indent = indent end
 		if key then fields[i][key] = value end
 	end
@@ -1529,10 +1529,10 @@ local function setOptionCollapsed(option, data, path, value)
 end
 
 userOptionFields = function(fields, data, options, config, path, indent)
-	for index = 1, table.getn(options or {}) do
+	for index = 1, #(options or {}) do
 		local option = options[index]
 		local optionPath = copyOptionPath(path, index)
-		local start = table.getn(fields)
+		local start = #fields
 		local optionClass = option and WA.author_option_classes[option.type]
 		if optionClass == "simple" then
 			simpleOptionField(fields, data, option, config)
@@ -1608,7 +1608,7 @@ local function authorOptionBlock(fields, data, options, index, option, path, ind
 	local pathKey = optionPathString(optionPath)
 	local collapsed = WA.OptionsState and WA.OptionsState.isCollapsed(
 		data, "author:" .. pathKey, true) or false
-	local start = table.getn(fields)
+	local start = #fields
 	local title = option.name or option.text or option.key or "Option " .. index
 	table.insert(fields, authorField({
 		type = "header", name = title, collapsed = collapsed,
@@ -1622,11 +1622,11 @@ local function authorOptionBlock(fields, data, options, index, option, path, ind
 	}, index, "header"))
 	annotateFields(fields, start, indent, "authorPath", pathKey)
 	if not collapsed then
-		local bodyStart = table.getn(fields)
+		local bodyStart = #fields
 		authorOptionFields(fields, data, option, index, options)
 		annotateFields(fields, bodyStart, indent, "authorPath", pathKey)
 		if WA.author_option_classes[option.type] == "group" then
-			for childIndex = 1, table.getn(option.subOptions or {}) do
+			for childIndex = 1, #(option.subOptions or {}) do
 				authorOptionBlock(fields, data, option.subOptions, childIndex,
 					option.subOptions[childIndex], optionPath, indent + 1)
 			end
@@ -1636,7 +1636,7 @@ end
 
 local function authorModeFields(fields, data)
 	data.authorOptions = data.authorOptions or {}
-	for index = 1, table.getn(data.authorOptions) do
+	for index = 1, #data.authorOptions do
 		authorOptionBlock(fields, data, data.authorOptions, index,
 			data.authorOptions[index], {}, 0)
 	end
@@ -1645,7 +1645,7 @@ local function authorModeFields(fields, data)
 	table.insert(fields, {
 		type = "button", name = "Add Option", authorAction = "add",
 		onClick = function()
-			local index = table.getn(data.authorOptions) + 1
+			local index = #data.authorOptions + 1
 			local option = {
 				type = "toggle", name = "Option " .. index,
 				key = ensureUniqueAuthorKey("option" .. index, "", data.authorOptions, 1),
@@ -1668,7 +1668,7 @@ local function groupLeafData(data)
 	local leaves = {}
 	if WA.OptionsState and WA.OptionsState.leafDescendants then
 		local ids = WA.OptionsState.leafDescendants(data.id)
-		for i = 1, table.getn(ids) do
+		for i = 1, #ids do
 			local child = WeakestAurasDB.displays[ids[i]]
 			if child then table.insert(leaves, child) end
 		end
@@ -1680,7 +1680,7 @@ end
 -- multi-selection, the list being the only difference.
 local function mergedMemberOptions(members)
 	local merged = {}
-	for i = 1, table.getn(members) do
+	for i = 1, #members do
 		local child = members[i]
 		mergeOptions(merged, child, child.authorOptions or {}, child.config or {}, {}, nil)
 	end
@@ -1696,7 +1696,7 @@ local function userModeFields(fields, data, options, members)
 		type = "button", name = "Reset to Defaults",
 		onClick = function()
 			if merged then
-				for i = 1, table.getn(members) do
+				for i = 1, #members do
 					local child = members[i]
 					child.config = {}
 					WA.ValidateUserConfig(child)
@@ -1741,10 +1741,10 @@ end
 -- affair.
 function WA.CustomOptionsFieldsMerged(fields, ids)
 	local members = {}
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local data = WeakestAurasDB.displays[ids[i]]
 		if data then table.insert(members, data) end
 	end
-	if table.getn(members) == 0 then return end
+	if #members == 0 then return end
 	userModeFields(fields, members[1], mergedMemberOptions(members), members)
 end

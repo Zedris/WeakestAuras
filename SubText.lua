@@ -44,9 +44,9 @@ end
 local function subTexts(parentData, subData)
 	local texts = { subData.text_text or "" }
 	local conditions = parentData.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local changes = conditions[i].changes or {}
-		for c = 1, table.getn(changes) do
+		for c = 1, #changes do
 			local change = changes[c]
 			local _, _, suffix = string.find(change.property or "", "^sub%.[0-9]+%.(.*)$")
 			if suffix == "text_text" and type(change.value) == "string" then
@@ -78,9 +78,9 @@ local ROTATE_RADIANS = { LEFT = math.pi / 2, RIGHT = -math.pi / 2 }
 -- of); ClassicAPI rotates about the centre, so upstream's formula would correct
 -- for a displacement that never happens here.
 local function rotateOffset(fs, rotate, point)
-	if not rotate or rotate == "NONE" or not WA.hasRotateText then return 0, 0 end
+	if not rotate or rotate == "NONE" or not WA.hasInlineText then return 0, 0 end
 	local w = fs:GetStringWidth() or 0
-	local h = (WA.hasStringHeight and fs:GetStringHeight() or fs:GetHeight()) or 0
+	local h = fs:GetStringHeight() or 0
 	local half = (h - w) / 2
 	local xo, yo = 0, 0
 	if string.find(point, "LEFT", 1, true) then xo = half
@@ -251,7 +251,7 @@ WA.RegisterSubRegionType("subtext", {
 
 		function region:SetRotateText(v)
 			self.rotateText = v or "NONE"
-			if WA.hasRotateText then
+			if WA.hasInlineText then
 				self.fontString:SetRotation(ROTATE_RADIANS[self.rotateText] or 0)
 			end
 			self:ApplyAnchor()
@@ -324,7 +324,7 @@ WA.RegisterSubRegionType("subtext", {
 		-- Offered only where the client can turn text: the option would otherwise
 		-- store a setting nothing acts on. Rotation rides WA.hasInlineText, so
 		-- this disappears on the same client that loses inline icons.
-		if WA.hasRotateText then
+		if WA.hasInlineText then
 			table.insert(fields, {
 				type = "select", name = "Rotate Text", key = "rotateText", half = true,
 				values = WA.text_rotate_values, labels = WA.text_rotate_types,
@@ -338,7 +338,7 @@ WA.RegisterSubRegionType("subtext", {
 			selfPoint = subData.anchor_point or "CENTER",
 			x = subData.anchorXOffset or 0, y = subData.anchorYOffset or 0,
 		})
-		for i = 1, table.getn(anchorFields) do table.insert(fields, anchorFields[i]) end
+		for i = 1, #anchorFields do table.insert(fields, anchorFields[i]) end
 
 		-- Directly under the Text field, whose label can only name the five
 		-- built-in symbols.
@@ -354,7 +354,7 @@ WA.RegisterSubRegionType("subtext", {
 				subData["text_" .. key] = v
 				WA.Add(parentData, true)
 			end, WA.textCore.SUBTEXT_KEYS)
-		for i = 1, table.getn(fontFields) do table.insert(fields, fontFields[i]) end
+		for i = 1, #fontFields do table.insert(fields, fontFields[i]) end
 
 		local get = formatGetter(subData)
 		local formatFields = WA.FormatOptionFields(subData.text_text, get,
@@ -362,7 +362,7 @@ WA.RegisterSubRegionType("subtext", {
 				subData["text_text_format_" .. key] = v
 				WA.Add(parentData, true)
 			end, parentData)
-		if table.getn(formatFields) > 0 then
+		if #formatFields > 0 then
 			-- Folded away by default: every %symbol in the text grows a Format row,
 			-- and with two or three symbols those rows bury the ones actually being
 			-- edited under settings that get chosen once. The summary keeps the
@@ -385,7 +385,7 @@ WA.RegisterSubRegionType("subtext", {
 				end,
 			})
 			if not collapsed then
-				for i = 1, table.getn(formatFields) do
+				for i = 1, #formatFields do
 					table.insert(fields, formatFields[i])
 				end
 			end

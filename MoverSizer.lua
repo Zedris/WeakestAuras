@@ -68,7 +68,7 @@ local function updateChain(m)
 		m.selfIcon:Hide()
 		m.anchorIcon:Hide()
 		m.label:Hide()
-		for i = 1, table.getn(m.dots) do m.dots[i]:Hide() end
+		for i = 1, #m.dots do m.dots[i]:Hide() end
 		return
 	end
 	m.selfIcon:Show()
@@ -90,7 +90,7 @@ local function updateChain(m)
 
 	local sx, sy = m.selfIcon:GetCenter()
 	local ax, ay = m.anchorIcon:GetCenter()
-	for i = 1, table.getn(m.dots) do m.dots[i]:Hide() end
+	for i = 1, #m.dots do m.dots[i]:Hide() end
 	if not sx or not ax then
 		m.label:Hide()
 		return
@@ -237,7 +237,7 @@ local function collectDescendants(id, set)
 	local data = WeakestAurasDB.displays[id]
 	local kids = data and data.controlledChildren
 	if kids then
-		for i = 1, table.getn(kids) do collectDescendants(kids[i], set) end
+		for i = 1, #kids do collectDescendants(kids[i], set) end
 	end
 end
 
@@ -277,9 +277,9 @@ end
 -- guide coordinate (where the line is drawn).
 local function nearestGuide(guides, cands)
 	local bestAbs, bestDelta, bestCoord
-	for gi = 1, table.getn(guides) do
+	for gi = 1, #guides do
 		local gc = guides[gi]
-		for ci = 1, table.getn(cands) do
+		for ci = 1, #cands do
 			local delta = gc - cands[ci]
 			local a = delta < 0 and -delta or delta
 			if a <= SNAP_THRESHOLD and (not bestAbs or a < bestAbs) then
@@ -574,17 +574,17 @@ local function makeHandleTexture(handle, coords)
 end
 
 local function hideHandleVisuals(handle)
-	for i = 1, table.getn(handle.visuals or {}) do handle.visuals[i]:Hide() end
+	for i = 1, #(handle.visuals or {}) do handle.visuals[i]:Hide() end
 end
 
 local function showHandleVisuals(handle)
 	if not handle._active then return end
-	for i = 1, table.getn(handle.visuals or {}) do handle.visuals[i]:Show() end
+	for i = 1, #(handle.visuals or {}) do handle.visuals[i]:Show() end
 end
 
 updateHandles = function(m)
 	local active = m.resizable and not M.locked
-	for i = 1, table.getn(m.handles or {}) do
+	for i = 1, #(m.handles or {}) do
 		local handle = m.handles[i]
 		handle._active = active
 		if active then handle:Show() else handle:Hide() end
@@ -710,7 +710,7 @@ local function ensureMover()
 		BOTTOMRIGHT = { { 1, 0, 0.5, 0, 1, 1, 0.5, 1 }, { 0, 0, 0, 1, 0.5, 0, 0.5, 1 } },
 		BOTTOMLEFT = { { 1, 0, 0.5, 0, 1, 1, 0.5, 1 }, { 0.5, 0, 0.5, 1, 1, 0, 1, 1 } },
 	}
-	for i = 1, table.getn(HANDLE_POINTS) do
+	for i = 1, #HANDLE_POINTS do
 		local point = HANDLE_POINTS[i]
 		local h = CreateFrame("Button", nil, m)
 		h:SetWidth(CORNER_SIZE)
@@ -730,7 +730,7 @@ local function ensureMover()
 		end
 		m.handles[i] = h
 	end
-	for i = 1, table.getn(HANDLE_POINTS) do
+	for i = 1, #HANDLE_POINTS do
 		local point = HANDLE_POINTS[i]
 		local h = m.handles[i]
 		if point == "TOP" then

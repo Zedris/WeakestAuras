@@ -78,7 +78,7 @@ function WA.ReleaseThumbnail(frame)
 	if not frame then return end
 	frame:Hide()
 	local pool = thumbnailPool(frame.thumbType)
-	for i = 1, table.getn(pool) do
+	for i = 1, #pool do
 		if pool[i] == frame then return end
 	end
 	table.insert(pool, frame)
@@ -100,7 +100,7 @@ end
 -- accounting never leaks a frame past what the visible rows need.
 function WA.ThumbnailPoolSize(regionType)
 	local pool = WA.thumbnailPools[regionType]
-	return pool and table.getn(pool) or 0
+	return pool and #pool or 0
 end
 
 -- spec = { defaults = ..., options = ..., summary = function(data) return "..." end,
@@ -187,19 +187,7 @@ end
 -- Resolved wherever a region is built rather than rewritten at import, so an aura
 -- whose type we later gain starts working on its own, with no second migration.
 function WA.RegionSpecFor(data)
-	local spec = data and WA.regionTypes[data.regionType]
-	if spec then
-		-- A circular progress texture is three warped textures, so it needs the
-		-- client's corner transforms; on a build without them the aura is honest
-		-- text instead of an empty box.
-		if data.regionType == "progresstexture"
-			and (data.orientation == "CLOCKWISE" or data.orientation == "ANTICLOCKWISE")
-			and not WA.hasTextureTransforms then
-			return WA.regionTypes["fallback"]
-		end
-		return spec
-	end
-	return WA.regionTypes["fallback"]
+	return (data and WA.regionTypes[data.regionType]) or WA.regionTypes["fallback"]
 end
 
 -- True if this aura's regionType is a container (group/dynamicgroup) rather
@@ -242,7 +230,7 @@ local function fileIDPath(id)
 		-- be absent -- caching an empty table for the session would be wrong.
 		if not WA.wa2FileIDs then return nil end
 		fileIDs = {}
-		for num, name in string.gfind(WA.wa2FileIDs, "(%d+),([^;]+)") do
+		for num, name in string.gmatch(WA.wa2FileIDs, "(%d+),([^;]+)") do
 			fileIDs[tonumber(num)] = name
 		end
 	end
@@ -297,15 +285,15 @@ function WA.ResolveModelFile(value)
 	return path
 end
 
--- A creature entry known to wear this model path, or nil -- SetCreature with
--- it renders the model textured where SetModel renders it white (skins live
--- in CreatureDisplayInfo, which SetModel never consults). Table shipped by
--- tools/mkcreatureids.py from this client's own creature cache.
-local creaturePaths
-function WA.ResolveCreatureEntry(path)
+-- A CreatureDisplayInfo id that dresses this model path, or nil --
+-- SetDisplayInfo with it renders the model textured where SetModel renders it
+-- white (skins live in CreatureDisplayInfo, which SetModel never consults).
+-- Table shipped by tools/mkmodeldisplays.py from this client's own DBCs.
+local modelDisplays
+function WA.ResolveModelDisplay(path)
 	if type(path) ~= "string" or path == "" then return nil end
-	creaturePaths = creaturePaths or {}
-	local hit = creaturePaths[path]
+	modelDisplays = modelDisplays or {}
+	local hit = modelDisplays[path]
 	if hit ~= nil then
 		if hit == false then return nil end
 		return hit
@@ -313,26 +301,9 @@ function WA.ResolveCreatureEntry(path)
 	local key = string.lower(string.gsub(path, "\\", "/"))
 	key = string.gsub(key, "%.md[xl]$", "")
 	key = string.gsub(key, "%.m2$", "")
-	local entry = tonumber(packedLookup(WA.wa2CreaturePaths, key))
-	creaturePaths[path] = entry or false
-	return entry
-end
-
--- A creature entry the server shows as this display id, or nil -- the id
--- space WeakAuras' modelDisplayInfo carries, honoured through SetCreature.
-local creatureDisplays
-function WA.ResolveDisplayCreature(value)
-	local id = tonumber(value)
-	if not id then return nil end
-	creatureDisplays = creatureDisplays or {}
-	local hit = creatureDisplays[id]
-	if hit ~= nil then
-		if hit == false then return nil end
-		return hit
-	end
-	local entry = tonumber(packedLookup(WA.wa2CreatureDisplays, id))
-	creatureDisplays[id] = entry or false
-	return entry
+	local id = tonumber(packedLookup(WA.modelDisplayIDs, key))
+	modelDisplays[path] = id or false
+	return id
 end
 
 -- Resolves the icon a leaf display currently shows: Manual mode uses
@@ -346,7 +317,7 @@ function WA.ResolveDisplayIcon(data)
 	if data.iconSource == 0 then
 		return WA.DrawableTexture(data.displayIcon)
 	end
-	for n = 1, table.getn(data.triggers or {}) do
+	for n = 1, #(data.triggers or {}) do
 		local system = WA.GetTriggerSystem and WA.GetTriggerSystem(data, n)
 		if system and system.GetNameAndIcon then
 			local _, icon = system.GetNameAndIcon(data, n)
@@ -409,9 +380,9 @@ local SUBTEXT_RENAMES = {
 
 local function migrateConditionProperties(data)
 	local conditions = data.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local changes = conditions[i].changes or {}
-		for j = 1, table.getn(changes) do
+		for j = 1, #changes do
 			local property = changes[j].property
 			if property == "text_size" then
 				changes[j].property = "fontSize"
@@ -439,9 +410,9 @@ end
 -- are region-provided keys ("region", "bar", "icon"), never `sub.<n>`.
 function WA.RemapSubRegionRefs(data, replacements)
 	local conditions = data.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local changes = conditions[i].changes or {}
-		for j = 1, table.getn(changes) do
+		for j = 1, #changes do
 			local _, _, index, suffix = string.find(changes[j].property or "", "^sub%.([0-9]+)%.(.*)$")
 			if index then
 				-- Present-but-false is "deleted" and nil is "not in the map, leave
@@ -470,13 +441,13 @@ function WA.EnforceSubregionExists(data, kind)
 	local subs = data.subRegions or {}
 	data.subRegions = subs
 	local found = {}
-	for i = 1, table.getn(subs) do
+	for i = 1, #subs do
 		if subs[i].type == kind then table.insert(found, i) end
 	end
-	local n = table.getn(found)
+	local n = #found
 	if n == 0 then
 		local map = {}
-		for i = 1, table.getn(subs) do map[i] = i + 1 end
+		for i = 1, #subs do map[i] = i + 1 end
 		table.insert(subs, 1, { type = kind })
 		WA.RemapSubRegionRefs(data, map)
 	elseif n > 1 then
@@ -485,7 +456,7 @@ function WA.EnforceSubregionExists(data, kind)
 		for i = n, 2, -1 do
 			local at = found[i]
 			local map = { [at] = false }
-			for j = at + 1, table.getn(subs) do map[j] = j - 1 end
+			for j = at + 1, #subs do map[j] = j - 1 end
 			table.remove(subs, at)
 			WA.RemapSubRegionRefs(data, map)
 		end
@@ -506,7 +477,7 @@ local LEGACY_SUB_FLOOR = 1
 -- skipping it would restack every such aura the first time it loads, silently.
 local function migrateSchemaV5(data)
 	local subs = data.subRegions
-	local n = table.getn(subs or {})
+	local n = #(subs or {})
 	if n < 2 then return end
 	local order = {}
 	for i = 1, n do
@@ -587,7 +558,7 @@ end
 -- SetPoint rejects outright.
 local function migrateSchemaV4(data)
 	local proto = WA.regionPrototype
-	for i = 1, table.getn(data.subRegions or {}) do
+	for i = 1, #(data.subRegions or {}) do
 		local subData = data.subRegions[i]
 		local anchor = subData and subData.anchor_point
 		if type(anchor) == "string" and not proto.IsAnchorPoint(anchor) then
@@ -607,7 +578,7 @@ local function migrateSchemaV3(data)
 			renameField(data, oldKey, newKey)
 		end
 	end
-	for i = 1, table.getn(data.subRegions or {}) do
+	for i = 1, #(data.subRegions or {}) do
 		local subData = data.subRegions[i]
 		if subData then
 			for oldKey, newKey in pairs(SUBTEXT_RENAMES) do
@@ -668,7 +639,7 @@ function WA.MergeDefaults(data)
 			data.triggers.activeTriggerMode = WA.trigger_modes.first_active
 		end
 
-		for i = 1, table.getn(data.triggers) do
+		for i = 1, #data.triggers do
 			local entry = data.triggers[i]
 			entry.trigger = entry.trigger or {}
 			entry.untrigger = entry.untrigger or {}
@@ -684,7 +655,7 @@ function WA.MergeDefaults(data)
 		-- GetOrder (upstream clamps here too).
 		local atm = data.triggers.activeTriggerMode
 		if type(atm) == "number" and atm ~= WA.trigger_modes.first_active
-			and (atm < 1 or atm > table.getn(data.triggers)) then
+			and (atm < 1 or atm > #data.triggers) then
 			data.triggers.activeTriggerMode = WA.trigger_modes.first_active
 		end
 	end
@@ -815,7 +786,7 @@ local function currentList(id)
 end
 
 local function indexOf(list, id)
-	for i = 1, table.getn(list) do
+	for i = 1, #list do
 		if list[i] == id then return i end
 	end
 	return nil
@@ -847,7 +818,7 @@ local function repairGroupChildren(groupId)
 	group.controlledChildren = group.controlledChildren or {}
 	local list = group.controlledChildren
 	local seen = {}
-	for i = table.getn(list), 1, -1 do
+	for i = #list, 1, -1 do
 		local id = list[i]
 		local child = WeakestAurasDB.displays[id]
 		if not child or child.parent ~= groupId or seen[id] then
@@ -877,7 +848,7 @@ local function repairOrder()
 
 	local order = ensureOrder()
 	local seen = {}
-	for i = table.getn(order), 1, -1 do
+	for i = #order, 1, -1 do
 		local id = order[i]
 		local data = WeakestAurasDB.displays[id]
 		if not data or data.parent ~= nil or seen[id] then
@@ -921,7 +892,7 @@ local function isSelfOrDescendant(groupId, candidateId)
 	if groupId == candidateId then return true end
 	local data = WeakestAurasDB.displays[groupId]
 	if not data or not data.controlledChildren then return false end
-	for i = 1, table.getn(data.controlledChildren) do
+	for i = 1, #data.controlledChildren do
 		if isSelfOrDescendant(data.controlledChildren[i], candidateId) then return true end
 	end
 	return false
@@ -941,7 +912,7 @@ function WA.AddChildToGroup(parentId, childId, index)
 	detach(childId)
 	parent.controlledChildren = parent.controlledChildren or {}
 	local list = parent.controlledChildren
-	local n = table.getn(list)
+	local n = #list
 	if not index or index < 1 or index > n + 1 then index = n + 1 end
 	table.insert(list, index, childId)
 	child.parent = parentId
@@ -983,7 +954,7 @@ function WA.ReorderAura(id, newParentId, before)
 	local from = indexOf(oldList, id)
 	if not from then return end
 
-	local n = table.getn(newList)
+	local n = #newList
 	if before < 1 then before = 1 elseif before > n + 1 then before = n + 1 end
 
 	if sameList then
@@ -1092,7 +1063,7 @@ function WA.PlaceAura(data, targetId)
 
 	local target = targetId and WeakestAurasDB.displays[targetId]
 	if not target then
-		WA.ReorderAura(data.id, nil, table.getn(ensureOrder()) + 1)
+		WA.ReorderAura(data.id, nil, #(ensureOrder()) + 1)
 		return data
 	end
 
@@ -1104,7 +1075,7 @@ function WA.PlaceAura(data, targetId)
 	else
 		local list = currentList(targetId)
 		local at = indexOf(list, targetId)
-		WA.ReorderAura(data.id, target.parent, at and at + 1 or table.getn(list) + 1)
+		WA.ReorderAura(data.id, target.parent, at and at + 1 or #list + 1)
 	end
 	return data
 end
@@ -1173,7 +1144,7 @@ local function duplicateTree(data)
 	local copy = copyDisplay(data)
 	local children = data.controlledChildren
 	if children then
-		for i = 1, table.getn(children) do
+		for i = 1, #children do
 			local child = WeakestAurasDB.displays[children[i]]
 			if child then WA.AddChildToGroup(copy.id, duplicateTree(child).id) end
 		end
@@ -1185,7 +1156,7 @@ local function addTree(data)
 	WA.Add(data)
 	local children = data.controlledChildren
 	if children then
-		for i = 1, table.getn(children) do
+		for i = 1, #children do
 			local child = WeakestAurasDB.displays[children[i]]
 			if child then addTree(child) end
 		end
@@ -1223,7 +1194,7 @@ function WA.AddTrigger(data)
 	data.triggers = data.triggers or {}
 	table.insert(data.triggers, { trigger = { type = "aura" } })
 	WA.MergeDefaults(data)
-	return table.getn(data.triggers)
+	return #data.triggers
 end
 
 -- Removes trigger n. Refuses to drop the last one (an aura always needs at
@@ -1232,7 +1203,7 @@ end
 -- the combination core keys everything by position, so nothing else needs
 -- renumbering.
 function WA.DeleteTrigger(data, n)
-	if not data.triggers or table.getn(data.triggers) <= 1 then return end
+	if not data.triggers or #data.triggers <= 1 then return end
 	table.remove(data.triggers, n)
 	WA.MergeDefaults(data)
 end
@@ -1256,10 +1227,10 @@ function WA.DeleteAura(id)
 		-- Snapshot first: RemoveChildFromGroup mutates controlledChildren as
 		-- it goes, which would skip entries if we iterated the live array.
 		local children = {}
-		for i = 1, table.getn(data.controlledChildren) do
+		for i = 1, #data.controlledChildren do
 			children[i] = data.controlledChildren[i]
 		end
-		for i = 1, table.getn(children) do
+		for i = 1, #children do
 			WA.RemoveChildFromGroup(children[i])
 		end
 	end
@@ -1284,12 +1255,12 @@ function WA.DeleteAuraTree(id)
 		local data = WeakestAurasDB.displays[current]
 		if not data then return end
 		local children = data.controlledChildren
-		for i = 1, table.getn(children or {}) do collect(children[i]) end
+		for i = 1, #(children or {}) do collect(children[i]) end
 		table.insert(doomed, current)
 	end
 	collect(id)
 
-	for i = 1, table.getn(doomed) do WA.DeleteAura(doomed[i]) end
+	for i = 1, #doomed do WA.DeleteAura(doomed[i]) end
 end
 
 -- Renames the display, moving it to the new key. Returns false (no-op) if the
@@ -1322,14 +1293,14 @@ function WA.RenameAura(id, newId)
 		end
 	end
 	if data.controlledChildren then
-		for i = 1, table.getn(data.controlledChildren) do
+		for i = 1, #data.controlledChildren do
 			local child = WeakestAurasDB.displays[data.controlledChildren[i]]
 			if child then child.parent = newId end
 		end
 	end
 
 	local order = ensureOrder()
-	for i = 1, table.getn(order) do
+	for i = 1, #order do
 		if order[i] == id then
 			order[i] = newId
 			break
@@ -1339,7 +1310,7 @@ function WA.RenameAura(id, newId)
 	-- Re-key the engine's runtime state to match the new id (no-op stub until
 	-- StateMachine.lua loads).
 	WA.Rename(id, newId)
-	for i = 1, table.getn(dependants) do
+	for i = 1, #dependants do
 		local other = dependants[i]
 		other.anchorFrameFrame = "WeakestAuras:" .. newId
 		WA.Add(other, true)

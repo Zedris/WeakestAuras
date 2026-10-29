@@ -118,7 +118,7 @@ textCore.SUBTEXT_KEYS = {
 }
 
 local FONT_VALUES, FONT_LABELS = {}, {}
-for i = 1, table.getn(textCore.FONTS) do
+for i = 1, #textCore.FONTS do
 	local f = textCore.FONTS[i]
 	table.insert(FONT_VALUES, f.path)
 	FONT_LABELS[f.path] = f.name

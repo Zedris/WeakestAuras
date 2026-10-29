@@ -148,7 +148,7 @@ local ACTION_SPECS = {
 }
 
 local ACTION_DROP_KEYS = {
-	"sound_channel", "stop_sound", "stop_sound_fade", "do_sound_fade", "message_channel",
+	"message_channel",
 }
 
 -- The glow targets Actions.lua can resolve. Upstream reaches its unit frames
@@ -321,7 +321,7 @@ end
 local function buildMediaIndex()
 	local index = { texture = {}, sound = {}, font = {} }
 	for category, list in pairs(WA.textureTypes or {}) do
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			addMedia(index.texture, WA.Widgets.TexturePath(category, list[i]))
 		end
 	end
@@ -333,7 +333,7 @@ local function buildMediaIndex()
 	end
 	for path in pairs(WA.bundled_sound_types or {}) do addMedia(index.sound, path) end
 	local fonts = WA.textCore and WA.textCore.FONTS or {}
-	for i = 1, table.getn(fonts) do addMedia(index.font, fonts[i].path) end
+	for i = 1, #fonts do addMedia(index.font, fonts[i].path) end
 	return index
 end
 
@@ -344,7 +344,7 @@ local function rewriteMedia(value)
 	if type(value) ~= "string" or value == "" then return nil end
 	local normalized = string.gsub(value, "/", "\\")
 	local lower = string.lower(normalized)
-	for i = 1, table.getn(MEDIA_ROOTS) do
+	for i = 1, #MEDIA_ROOTS do
 		local root = MEDIA_ROOTS[i]
 		if string.sub(lower, 1, string.len(root.prefix)) == root.prefix then
 			mediaIndex = mediaIndex or buildMediaIndex()
@@ -403,7 +403,7 @@ end
 
 local function take(dst, src, keys)
 	if type(src) ~= "table" then return end
-	for i = 1, table.getn(keys) do
+	for i = 1, #keys do
 		local key = keys[i]
 		if src[key] ~= nil then dst[key] = WA.DeepCopy(src[key]) end
 	end
@@ -426,52 +426,16 @@ end
 local function isSupportedUnit(unit, tokens)
 	if unit == nil then return true end
 	tokens = tokens or WA.unit_tokens
-	for i = 1, table.getn(tokens or {}) do
+	for i = 1, #(tokens or {}) do
 		if tokens[i] == unit then return true end
 	end
 	return false
 end
 
--- Constructs 5.0's parser refuses, caught by reading rather than by compiling:
--- the headless harness runs 5.1, where both compile, so loadstring alone would
--- accept code the real client cannot take.
---
--- ClassicAPI rewrites all three at source before the parser sees them, and it
--- hooks the function loadstring funnels through, so with that build the client
--- takes them and this filter has to stand down -- it would otherwise drop 19 of
--- the corpus's 355 custom-Lua fields that the client can now run.
---
--- Modulo is not tested for. `a % b` is a 5.0 parse error like the other two, but
--- `%` is also every format and pattern string's escape character, and a reading
--- test cannot tell `("%d"):format(n)` from `a % b` without lexing strings. The
--- 5.0 client's own loadstring refuses it a moment later, which is the check that
--- catches it; only the 5.1 harness is fooled, and only into keeping it.
---
--- String-method sugar (`s:gsub(...)`) is not looked for either, for a different
--- reason: it parses on 5.0, and the release carrying the transpile also
--- resolves it at run time through the string table. On a client behind that
--- release it imports and errors where it stands -- a call on an arbitrary
--- receiver cannot be told from a table method by reading.
-local function lua50SourceError(source)
-	if WA.FeatureGate("luaSyntax51") then return nil end
-	if string.find(source, "#%s*[%a_]") then return "length operator" end
-	if string.find(source, "%.%.%.") then return "vararg syntax" end
-	return nil
-end
-
--- The one drop a user can fix by updating a client mod rather than editing the
--- aura, so the detail names the construct and the release that carries it.
-local function syntaxDropDetail(detail, why)
-	local gate = WA.FEATURE_GATES and WA.FEATURE_GATES.luaSyntax51
-	return detail .. ": " .. why .. " needs ClassicAPI "
-		.. (gate and WA.FeatureGateNeeds(gate) or "?")
-end
-
 local function validateTriggerCode(source, detail, report, tableExpression)
 	if not hasSource(source) then return true end
-	local why = lua50SourceError(source)
-	local valid = not why
-	if valid and type(WA.LoadFunction) == "function" then
+	local valid = true
+	if type(WA.LoadFunction) == "function" then
 		local candidate = source
 		if tableExpression then
 			candidate = "function() return \n" .. source .. "\n end"
@@ -479,7 +443,7 @@ local function validateTriggerCode(source, detail, report, tableExpression)
 		valid = WA.LoadFunction(candidate, nil) ~= nil
 	end
 	if not valid then
-		reportDrop(report, "custom code", why and syntaxDropDetail(detail, why) or detail)
+		reportDrop(report, "custom code", detail)
 		return false
 	end
 	return true
@@ -487,13 +451,12 @@ end
 
 local function validateConditionCode(source, detail, report, body)
 	if not hasSource(source) then return false end
-	local why = lua50SourceError(source)
-	local valid = not why
-	if valid and type(WA.LoadFunction) == "function" then
+	local valid = true
+	if type(WA.LoadFunction) == "function" then
 		valid = WA.LoadFunction(source, nil, body) ~= nil
 	end
 	if not valid then
-		reportDrop(report, "custom code", why and syntaxDropDetail(detail, why) or detail)
+		reportDrop(report, "custom code", detail)
 		return false
 	end
 	return true
@@ -523,7 +486,7 @@ local function translateConditionCheck(source, templates, report, label, types)
 		end
 		if type(source.checks) ~= "table" then return nil, "combinator has no checks" end
 		local checks, filled = {}, 0
-		for i = 1, table.getn(source.checks) do
+		for i = 1, #source.checks do
 			local child, detail = translateConditionCheck(source.checks[i], templates, report,
 				label .. " check " .. i, types)
 			if child then
@@ -534,7 +497,7 @@ local function translateConditionCheck(source, templates, report, label, types)
 				reportDrop(report, "condition check", label .. " check " .. i .. ": " .. tostring(detail))
 			end
 		end
-		if table.getn(checks) == 0 then
+		if #checks == 0 then
 			return nil, (filled == 0 and UNFILLED_CHECK) or "all combinator checks are invalid"
 		end
 		return { trigger = -2, variable = source.variable, checks = checks }
@@ -579,7 +542,7 @@ end
 local function translateConditionChanges(source, properties, report, label)
 	if type(source) ~= "table" then return nil, "missing changes" end
 	local changes = {}
-	for i = 1, table.getn(source) do
+	for i = 1, #source do
 		local change = source[i]
 		if type(change) ~= "table" then
 			return nil, "invalid change"
@@ -641,12 +604,12 @@ local function translateConditions(source, data, report)
 	local templates = WA.GetConditionTemplates(data)
 	local properties = WA.GetProperties(data)
 	local types = {}
-	for i = 1, table.getn(data.triggers) do
+	for i = 1, #data.triggers do
 		local entry = data.triggers[i]
 		types[i] = entry and entry.trigger and entry.trigger.type
 	end
 	local conditions = {}
-	for i = 1, table.getn(source) do
+	for i = 1, #source do
 		local label = conditionLabel(data, i)
 		local item = source[i]
 		local check, checkDetail = translateConditionCheck(item and item.check, templates, report, label, types)
@@ -700,7 +663,7 @@ local function translateLoadMultiselect(source, destination, field, report, data
 		local single = type(block) == "table" and block.single or nil
 		if single == nil then
 			local selected = selectedLoadValues(block)
-			single = table.getn(selected) == 1 and selected[1] or nil
+			single = #selected == 1 and selected[1] or nil
 		end
 		if single ~= nil then
 			destination["use_" .. field] = "single"
@@ -709,10 +672,10 @@ local function translateLoadMultiselect(source, destination, field, report, data
 		end
 	else
 		local selected = selectedLoadValues(block)
-		if table.getn(selected) > 0 then
+		if #selected > 0 then
 			destination["use_" .. field] = "multi"
 			destination[field .. "_multi"] = {}
-			for i = 1, table.getn(selected) do
+			for i = 1, #selected do
 				destination[field .. "_multi"][selected[i]] = true
 			end
 			return
@@ -756,14 +719,14 @@ local function translateLoadClassAndSpec(source, destination, report, data)
 		local single = type(block) == "table" and block.single or nil
 		if single == nil then
 			local selected = selectedLoadValues(block)
-			single = table.getn(selected) == 1 and selected[1] or nil
+			single = #selected == 1 and selected[1] or nil
 		end
 		ids = { single }
 	else
 		ids = selectedLoadValues(block)
 	end
 	local classes, n = {}, 0
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local cls = SPEC_ID_CLASS[tonumber(ids[i]) or -1]
 		if cls and not classes[cls] then
 			classes[cls] = true
@@ -802,7 +765,7 @@ local function translateLoadInstanceSize(source, destination, report, data)
 		local single = type(block) == "table" and block.single or nil
 		if single == nil then
 			local selected = selectedLoadValues(block)
-			single = table.getn(selected) == 1 and selected[1] or nil
+			single = #selected == 1 and selected[1] or nil
 		end
 		if single ~= nil and INSTANCE_SIZE_BUCKETS[single] then
 			destination.use_instancesize = "single"
@@ -812,7 +775,7 @@ local function translateLoadInstanceSize(source, destination, report, data)
 	else
 		local selected = selectedLoadValues(block)
 		local set, n = {}, 0
-		for i = 1, table.getn(selected) do
+		for i = 1, #selected do
 			if INSTANCE_SIZE_BUCKETS[selected[i]] then
 				set[selected[i]] = true
 				n = n + 1
@@ -856,7 +819,7 @@ local function translateLoad(source, data, report)
 		destination.use_stance = "single"
 		destination.stance = tonumber(source.stance)
 	end
-	for i = 1, table.getn(simple) do
+	for i = 1, #simple do
 		local field = simple[i]
 		if source["use_" .. field] and source[field] ~= nil then
 			destination["use_" .. field] = true
@@ -912,12 +875,6 @@ local function translateLoad(source, data, report)
 end
 
 local function reportStateCompatibility(trigger, triggernum, report)
-	local events = trigger.events
-	if type(events) == "string"
-		and (string.find(events, "CLEU:", 1, true)
-			or string.find(events, "COMBAT_LOG_EVENT_UNFILTERED:", 1, true)) then
-		reportDrop(report, "unsupported custom event syntax", "trigger " .. triggernum .. ": CLEU")
-	end
 	if trigger.custom_type ~= "stateupdate" then return end
 	local code = tostring(trigger.custom or "") .. "\n" .. tostring(trigger.customVariables or "")
 	if string.find(code, "additionalProgress", 1, true) then
@@ -936,13 +893,13 @@ end
 -- the spell ids append to the name list rather than needing a second field.
 local function translateAuraSpellIds(trigger, source)
 	local ids = source.auraspellids
-	if type(ids) ~= "table" or table.getn(ids) == 0 then return end
+	if type(ids) ~= "table" or #ids == 0 then return end
 	trigger.auranames = trigger.auranames or {}
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local id = tonumber(ids[i])
 		if id then table.insert(trigger.auranames, tostring(id)) end
 	end
-	if table.getn(trigger.auranames) > 0 then trigger.useName = true end
+	if #trigger.auranames > 0 then trigger.useName = true end
 end
 
 -- namePattern_name/_operator upstream, namePattern/namePatternOperator here.
@@ -992,7 +949,7 @@ local function translateAuraTrigger(source, triggernum, report)
 		report.refused = "trigger " .. triggernum .. " uses unsupported unit " .. tostring(source.unit)
 		return nil
 	end
-	for i = 1, table.getn(AURA_CLONE_KEYS) do
+	for i = 1, #AURA_CLONE_KEYS do
 		local key = AURA_CLONE_KEYS[i]
 		if source[key] ~= nil and (key == "combineMode" or source[key]) then
 			report.refused = "trigger " .. triggernum .. " uses clone-dependent aura setting " .. key
@@ -1029,7 +986,7 @@ local function translateCustomTrigger(source, entry, triggernum, report)
 	-- an imported trigger's events box mean something different from a
 	-- hand-written one's, and would leave the author's own `event ==` tests
 	-- comparing against names the rewrite took away.
-	for i = 1, table.getn(CUSTOM_UNSUPPORTED_KEYS) do
+	for i = 1, #CUSTOM_UNSUPPORTED_KEYS do
 		local key = CUSTOM_UNSUPPORTED_KEYS[i]
 		if source[key] ~= nil then
 			reportDrop(report, "unsupported custom field", "trigger " .. triggernum .. ": " .. key)
@@ -1043,7 +1000,7 @@ local function translateCustomTrigger(source, entry, triggernum, report)
 		{ key = "customIcon", detail = "icon", tableExpression = false },
 		{ key = "customVariables", detail = "variables", tableExpression = true },
 	}
-	for i = 1, table.getn(codeFields) do
+	for i = 1, #codeFields do
 		local field = codeFields[i]
 		if trigger[field.key] ~= nil and not validateTriggerCode(trigger[field.key],
 			"trigger " .. triggernum .. " " .. field.detail, report, field.tableExpression) then
@@ -1099,6 +1056,7 @@ local GENERIC_ARG_NAMES = {
 	-- so its threshold is upstream's `power` and its operator `power_operator`.
 	combopoints = { comboPoints = "power" },
 	conditions = { groupType = "ingroup" },
+	combatlog = { spellIdList = "spellId", spellNameList = "spellName" },
 }
 
 -- Where a mapped arg's *values* diverge as well as its name, ours -> theirs.
@@ -1155,13 +1113,15 @@ local GENERIC_UNSUPPORTED = {
 	cast = { spell = "refuse", spellNames = "refuse", spellId = "refuse",
 		castType = "drop", interruptible = "drop", sourceUnit = "drop", destUnit = "drop" },
 	castsucceeded = { spellNames = "refuse", spellId = "refuse" },
+	-- ClassicAPI's _ENERGIZE payload has no over-energize value to test.
+	combatlog = { overEnergize = "drop" },
 	-- Upstream splits an instance by raid size and by difficulty, neither of
 	-- which this client reports; its instance *type* list is the same split, so
 	-- landing it would widen "25 man" into every raid. All three widen, so all
 	-- three are reported rather than silently ignored.
 	conditions = { instance_type = "drop", instance_size = "drop",
 		instance_difficulty = "drop" },
-	crowdcontrol = { controlType = "drop", interruptSchool = "drop", spellName = "drop" },
+	crowdcontrol = { spellName = "drop" },
 	itemequipped = { itemSlot = "drop" },
 	itemset = { equipped = "drop" },
 	location = { zoneIds = "drop", instanceId = "drop", instanceSize = "drop",
@@ -1274,6 +1234,28 @@ local function landMultiSelect(trigger, base, value, use, wantNumber, incoming, 
 	end
 end
 
+-- Upstream's multiEntry table onto a local list, entries as trimmed strings. A
+-- save from before the field took several entries keeps one bare value there.
+-- `csv` is the NPC ID filter's shape instead: one comma-separated string whose
+-- "-" entries exclude (ParseStringCheck), kept here as one "-ID" entry each.
+local function landList(value, csv)
+	if value == nil then return nil end
+	local raw = {}
+	if type(value) == "table" then
+		for i = 1, #value do raw[i] = value[i] end
+	elseif csv and type(value) == "string" then
+		for part in string.gmatch(value, "[^,]+") do table.insert(raw, part) end
+	else
+		raw[1] = value
+	end
+	local out = {}
+	for i = 1, #raw do
+		local _, _, negate, rest = string.find(tostring(raw[i]), "^%s*(%-?)%s*(.-)%s*$")
+		if rest ~= "" then table.insert(out, negate .. rest) end
+	end
+	return out
+end
+
 -- One value out of upstream's multiselect shape, or nil when it names several:
 -- a select here holds one value and cannot express the set.
 local function singleSelectValue(value, use)
@@ -1318,7 +1300,7 @@ local function translateItemTypeEquipped(trigger, source, label, report)
 	end
 
 	local classID, subclasses = nil, {}
-	for i = 1, table.getn(ids) do
+	for i = 1, #ids do
 		local combined = ids[i]
 		if combined then
 			local class = math.floor(combined / ITEM_TYPE_CLASS_STRIDE)
@@ -1327,7 +1309,7 @@ local function translateItemTypeEquipped(trigger, source, label, report)
 				return false
 			end
 			classID = class
-			subclasses[math.mod(combined, ITEM_TYPE_CLASS_STRIDE)] = true
+			subclasses[math.fmod(combined, ITEM_TYPE_CLASS_STRIDE)] = true
 		end
 	end
 	if classID == nil then return true end
@@ -1363,7 +1345,8 @@ local function translateGenericTrigger(source, triggernum, report)
 			label .. ": power type 4 is combo points upstream and pet happiness here")
 	end
 
-	local defaults = (WA.triggerTypes[protoKey] or {}).defaults or {}
+	local spec = WA.triggerTypes[protoKey] or {}
+	local defaults = spec.defaults or {}
 
 	-- An inverted match is never a widening: a prototype without its own inverse
 	-- would show exactly when the author meant it to hide.
@@ -1373,7 +1356,7 @@ local function translateGenericTrigger(source, triggernum, report)
 	end
 	-- Upstream offers these on every trigger; here they are compiled only for a
 	-- custom one, so on a prototype they would be code nothing ever runs.
-	for i = 1, table.getn(GENERIC_CODE_DROPS) do
+	for i = 1, #GENERIC_CODE_DROPS do
 		if hasSource(source[GENERIC_CODE_DROPS[i]]) then
 			reportDrop(report, "unsupported trigger code", label .. ": " .. GENERIC_CODE_DROPS[i])
 		end
@@ -1393,14 +1376,22 @@ local function translateGenericTrigger(source, triggernum, report)
 
 	local names = GENERIC_ARG_NAMES[protoKey] or {}
 	local trigger = { type = protoKey }
+	local listArgs = {}
+	for i = 1, #(spec.args or {}) do
+		if spec.args[i].type == "list" then listArgs[spec.args[i].name] = spec.args[i] end
+	end
 	local bases = genericBaseKeys(defaults)
-	for i = 1, table.getn(bases) do
+	for i = 1, #bases do
 		local base = bases[i]
 		local srcKey = names[base] or base
 		local wantNumber = type(defaults[base]) == "number"
+		-- A list lands from the arg declarations below: read as a scalar here,
+		-- its entries past the second would be lost.
+		if listArgs[base] then
+			-- landed below
 		-- A multiselect owns its own gate key, so it lands whole and skips the
 		-- gate/operator/second-bound handling the scalar filters share.
-		if defaults[base .. "_multi"] ~= nil then
+		elseif defaults[base .. "_multi"] ~= nil then
 			local ours = (GENERIC_ARG_VALUES[protoKey] or {})[base]
 			local incoming, skipped
 			if ours then
@@ -1409,7 +1400,7 @@ local function translateGenericTrigger(source, triggernum, report)
 			end
 			landMultiSelect(trigger, base, source[srcKey], source["use_" .. srcKey],
 				wantNumber, incoming, skipped)
-			for i = 1, table.getn(skipped or {}) do
+			for i = 1, #(skipped or {}) do
 				reportDrop(report, "unsupported trigger filter",
 					label .. ": " .. base .. " value " .. skipped[i])
 			end
@@ -1474,15 +1465,42 @@ local function translateGenericTrigger(source, triggernum, report)
 		end
 	end
 
+	-- A tristate is upstream's use_<name> on its own -- nil, true or false --
+	-- with no base key in the defaults for the walk above to find, so it is
+	-- taken from the arg declarations and lands verbatim.
+	for i = 1, #(spec.args or {}) do
+		local arg = spec.args[i]
+		if arg.type == "tristate" then
+			local use = source["use_" .. (names[arg.name] or arg.name)]
+			if use == true or use == false then trigger["use_" .. arg.name] = use end
+		end
+	end
+
+	for name, arg in pairs(listArgs) do
+		local srcKey = names[name] or name
+		local use = source["use_" .. srcKey]
+		if use ~= nil then trigger["use_" .. name] = use and true or false end
+		local entries = landList(source[srcKey], arg.listNegate)
+		if entries then trigger[name] = entries end
+	end
+
 	if protoKey == "itemtypeequipped"
 		and not translateItemTypeEquipped(trigger, source, label, report) then
 		return nil
 	end
 
-	local fansOut = (WA.triggerTypes[protoKey] or {}).statesParameter == "unit"
+	local fansOut = spec.statesParameter == "unit"
 	if defaults.unit ~= nil and not isSupportedUnit(trigger.unit, fansOut and WA.unit_tokens_multi) then
 		report.refused = label .. " uses unsupported unit " .. tostring(trigger.unit)
 		return nil
+	end
+	-- The prototype's own verdict on a setting it cannot express, in its words.
+	if spec.importCheck then
+		local reason = spec.importCheck(trigger)
+		if reason then
+			report.refused = label .. " " .. reason
+			return nil
+		end
 	end
 	return trigger
 end
@@ -1524,7 +1542,7 @@ local function translateTriggers(source, report)
 	end
 	local sourceTriggers = source.triggers
 	local triggers = {}
-	for i = 1, table.getn(sourceTriggers) do
+	for i = 1, #sourceTriggers do
 		local entry = translateTriggerEntry(sourceTriggers[i], i, report)
 		if not entry then return nil end
 		triggers[i] = entry
@@ -1560,7 +1578,7 @@ local function knownTextSymbol(data, symbol)
 	if string.find(bare, "^c%d*$") then return true end
 	if type(WA.TextSymbols) == "function" then
 		local names = WA.TextSymbols(data)
-		for i = 1, table.getn(names or {}) do
+		for i = 1, #(names or {}) do
 			if names[i] == bare then return true end
 		end
 	end
@@ -1645,7 +1663,7 @@ local function translateFont(font)
 	local aliases = WA.textCore and WA.textCore.FONT_ALIASES
 	if aliases and aliases[font] then font = aliases[font] end
 	local fonts = WA.textCore and WA.textCore.FONTS or {}
-	for i = 1, table.getn(fonts) do
+	for i = 1, #fonts do
 		if fonts[i].path == font then return font, default end
 		if fonts[i].name == font then return fonts[i].path, default end
 	end
@@ -1654,7 +1672,7 @@ end
 
 local function subAnchorSupported(data, key)
 	local values = WA.regionPrototype.GetSubRegionAnchors(data, "point")
-	for i = 1, table.getn(values) do
+	for i = 1, #values do
 		if values[i] == key then return true end
 	end
 	return false
@@ -1721,7 +1739,7 @@ local function translateSubtext(source, index, data, report)
 	-- the width is automatic -- which is upstream's default. Only a subtext that
 	-- asked for a fixed width has lost anything to report.
 	if source.text_automaticWidth == "Fixed" then
-		for i = 1, table.getn(SUBTEXT_DROP_KEYS) do
+		for i = 1, #SUBTEXT_DROP_KEYS do
 			local key = SUBTEXT_DROP_KEYS[i]
 			if source[key] ~= nil then
 				reportDrop(report, "unsupported subtext field", subDetail("subtext", index, key))
@@ -1790,7 +1808,7 @@ local function translateSubtick(source, index, report)
 			elseif first ~= nil then
 				reportDrop(report, "unsupported progress source", subDetail("subtick", index, "progressSources"))
 			end
-			if table.getn(source.progressSources) > 1 then
+			if #source.progressSources > 1 then
 				reportDrop(report, "multiple progress sources", subDetail("subtick", index, "progressSources"))
 			end
 		end
@@ -1835,7 +1853,7 @@ local function translateSubRegions(source, data, report)
 		return {}
 	end
 	local destination = {}
-	for i = 1, table.getn(source.subRegions) do
+	for i = 1, #source.subRegions do
 		local sub = translateSubRegion(source.subRegions[i], i, data.regionType, data, report)
 		if sub then table.insert(destination, sub) end
 	end
@@ -1856,17 +1874,13 @@ local function keysFor(localType)
 	local spec = WA.regionTypes[localType]
 	for key in pairs(spec and spec.defaults or {}) do add(key) end
 	if spec and spec.isGroup then
-		for i = 1, table.getn(GROUP_KEYS) do add(GROUP_KEYS[i]) end
+		for i = 1, #GROUP_KEYS do add(GROUP_KEYS[i]) end
 		return keys
 	end
-	for i = 1, table.getn(PROTOTYPE_KEYS) do add(PROTOTYPE_KEYS[i]) end
+	for i = 1, #PROTOTYPE_KEYS do add(PROTOTYPE_KEYS[i]) end
 	if localType == "text" then
-		for i = 1, table.getn(TEXT_KEYS) do add(TEXT_KEYS[i]) end
+		for i = 1, #TEXT_KEYS do add(TEXT_KEYS[i]) end
 	end
-	-- Not in the model defaults (nothing here reads it beyond a report), but an
-	-- aura that picked its model by display info must still say so on the trip
-	-- back to a client that can honour it.
-	if localType == "model" then add("modelDisplayInfo") end
 	return keys
 end
 
@@ -1881,7 +1895,7 @@ end
 -- three names that actually break under a list of twenty that do not.
 local function collectForeignApi(report, source)
 	if type(source) ~= "string" or not report then return end
-	for name in string.gfind(source, "WeakAuras[%.:]([%w_]+)%s*%(") do
+	for name in string.gmatch(source, "WeakAuras[%.:]([%w_]+)%s*%(") do
 		if not (WA.ForeignApiNames and WA.ForeignApiNames[name]) then
 			report.foreignApi = report.foreignApi or {}
 			report.foreignApiOrder = report.foreignApiOrder or {}
@@ -1902,7 +1916,7 @@ end
 -- is skipped -- these packs do write `WA_MyThing = function()`.
 local function collectForeignEnv(report, source)
 	if type(source) ~= "string" or not report then return end
-	for name in string.gfind(source, "(WA_[%w_]+)%s*%(") do
+	for name in string.gmatch(source, "(WA_[%w_]+)%s*%(") do
 		if not (WA.AuraEnvNames and WA.AuraEnvNames[name])
 			and not string.find(source, "function%s+" .. name .. "%s*%(")
 			and not string.find(source, name .. "%s*=%s*function") then
@@ -2005,7 +2019,7 @@ function WA.CollectImportCode(data, report, prefix)
 	report.code = report.code or {}
 	prefix = prefix or (tostring(data.id or "?") .. " - ")
 
-	for i = 1, table.getn(DISPLAY_CODE_KEYS) do
+	for i = 1, #DISPLAY_CODE_KEYS do
 		local item = DISPLAY_CODE_KEYS[i]
 		local active
 		if item.key == "customSort" then
@@ -2021,11 +2035,11 @@ function WA.CollectImportCode(data, report, prefix)
 	end
 
 	local triggers = data.triggers
-	for n = 1, table.getn(triggers or {}) do
+	for n = 1, #(triggers or {}) do
 		local entry = triggers[n]
 		for _, slot in ipairs({ "trigger", "untrigger" }) do
 			local block = entry and entry[slot]
-			for i = 1, table.getn(TRIGGER_CODE_KEYS) do
+			for i = 1, #TRIGGER_CODE_KEYS do
 				local item = TRIGGER_CODE_KEYS[i]
 				local label, liveKey = item.label, item.key
 				-- The untrigger block holds one field the compiler reads, under the
@@ -2052,17 +2066,17 @@ function WA.CollectImportCode(data, report, prefix)
 		if type(check) ~= "table" then return end
 		if check.trigger == -2 then
 			local subs = check.checks or {}
-			for i = 1, table.getn(subs) do addCheckCode(subs[i], where .. " check " .. i) end
+			for i = 1, #subs do addCheckCode(subs[i], where .. " check " .. i) end
 			return
 		end
 		if check.trigger == -1 and check.variable == "customcheck" then
 			addCode(report, where .. " custom check", check.value, true)
 		end
 	end
-	for n = 1, table.getn(conditions or {}) do
+	for n = 1, #(conditions or {}) do
 		addCheckCode(conditions[n] and conditions[n].check, prefix .. "condition " .. n)
 		local changes = conditions[n] and conditions[n].changes or {}
-		for i = 1, table.getn(changes) do
+		for i = 1, #changes do
 			local change = changes[i]
 			local property = change and change.property
 			local source
@@ -2079,7 +2093,7 @@ function WA.CollectImportCode(data, report, prefix)
 	local animation = data.animation
 	for _, phase in ipairs({ "start", "main", "finish" }) do
 		local block = animation and animation[phase]
-		for i = 1, table.getn(ANIMATION_CODE_KEYS) do
+		for i = 1, #ANIMATION_CODE_KEYS do
 			local key = ANIMATION_CODE_KEYS[i]
 			local slot = string.sub(key, 1, string.len(key) - 4)
 			addCode(report, prefix .. "animation " .. phase .. " " .. key,
@@ -2090,7 +2104,7 @@ function WA.CollectImportCode(data, report, prefix)
 	local actions = data.actions
 	for _, phase in ipairs({ "init", "start", "finish" }) do
 		local block = actions and actions[phase]
-		for i = 1, table.getn(ACTION_CODE_KEYS) do
+		for i = 1, #ACTION_CODE_KEYS do
 			local key = ACTION_CODE_KEYS[i]
 			local enabled = "do_custom"
 			if key == "customOnLoad" then enabled = "do_custom_load"
@@ -2139,7 +2153,7 @@ local function validateAnimation(data, sourceType, report)
 				reportDrop(report, "unsupported animation", phase .. ": use_color")
 				block.use_color = false
 			end
-			for i = 1, table.getn(ANIMATION_CODE_KEYS) do
+			for i = 1, #ANIMATION_CODE_KEYS do
 				local key = ANIMATION_CODE_KEYS[i]
 				local source = block[key]
 				if hasSource(source) and type(WA.LoadFunction) == "function"
@@ -2159,7 +2173,7 @@ local function validateActionCode(data, report)
 		local block = actions[phase]
 		local specs = ACTION_SPECS[phase]
 		if type(block) == "table" then
-			for i = 1, table.getn(specs or {}) do
+			for i = 1, #(specs or {}) do
 				local spec = specs[i]
 				local source = block[spec.key]
 				if hasSource(source) and type(WA.LoadFunction) == "function"
@@ -2216,7 +2230,7 @@ local function sanitizeGlow(block, report, label)
 			block.glow_frame_type = nil
 		end
 	end
-	for i = 1, table.getn(GLOW_PROC_KEYS) do
+	for i = 1, #GLOW_PROC_KEYS do
 		local key = GLOW_PROC_KEYS[i]
 		if block[key] ~= nil then
 			reportDrop(report, "unsupported glow art", label .. ": " .. key)
@@ -2231,7 +2245,7 @@ local function sanitizeActions(data, report)
 	for _, phase in ipairs({ "init", "start", "finish" }) do
 		local block = actions[phase]
 		if type(block) == "table" then
-			for i = 1, table.getn(ACTION_DROP_KEYS) do
+			for i = 1, #ACTION_DROP_KEYS do
 				local key = ACTION_DROP_KEYS[i]
 				if block[key] ~= nil then
 					reportDrop(report, "unsupported action", phase .. ": " .. key)
@@ -2259,9 +2273,9 @@ end
 -- block's do.
 local function sanitizeConditionGlows(data, report)
 	local conditions = data.conditions
-	for n = 1, table.getn(conditions or {}) do
+	for n = 1, #(conditions or {}) do
 		local changes = conditions[n] and conditions[n].changes or {}
-		for i = 1, table.getn(changes) do
+		for i = 1, #changes do
 			local change = changes[i]
 			if change and change.property == "glowexternal" and type(change.value) == "table" then
 				sanitizeGlow(change.value, report, conditionLabel(data, n) .. " glow")
@@ -2284,7 +2298,7 @@ local function reportMediaOptions(options, report, seen)
 end
 
 local function noteWagoBookkeeping(source, report)
-	for i = 1, table.getn(WAGO_BOOKKEEPING_KEYS) do
+	for i = 1, #WAGO_BOOKKEEPING_KEYS do
 		local key = WAGO_BOOKKEEPING_KEYS[i]
 		if source[key] ~= nil then
 			report.wagoKeys = report.wagoKeys or {}
@@ -2328,7 +2342,7 @@ local function foreignAddonPath(value)
 end
 
 local function reportUndrawableTextures(source, data, report)
-	for i = 1, table.getn(TEXTURE_FIELDS) do
+	for i = 1, #TEXTURE_FIELDS do
 		local field = TEXTURE_FIELDS[i]
 		local value = source[field.key]
 		if value ~= nil and value ~= ""
@@ -2355,7 +2369,7 @@ local function translateBarTexture(data, source, report)
 	local name = source.texture
 	if name == nil then return end
 	local shipped = WA.Widgets.BarTextures()
-	for i = 1, table.getn(shipped) do
+	for i = 1, #shipped do
 		if shipped[i] == name then return end
 	end
 	local alias = BAR_TEXTURE_ALIASES[name]
@@ -2380,19 +2394,14 @@ local function translateModel(data, source, report)
 		if data.rotation < 0 then data.rotation = data.rotation + 360 end
 		reportDrop(report, "model camera transform approximated", label)
 	end
-	if source.modelDisplayInfo then
-		-- Honoured when the display id maps to a creature entry this client's
-		-- cache has answered for (SetCreature renders it); reported otherwise.
-		if not WA.ResolveDisplayCreature(source.model_fileId) then
-			reportDrop(report, "model picked by display info", label .. ": " .. tostring(source.model_fileId))
-		end
-	elseif source.modelIsUnit then
+	if source.modelIsUnit then
 		local unit = source.model_fileId
-		if type(unit) ~= "string" or unit == "" or unit == "focus"
-			or string.find(tostring(unit), "^soft") then
+		if type(unit) ~= "string" or unit == "" or string.find(tostring(unit), "^soft") then
 			reportDrop(report, "unit this client does not have", label .. ": " .. tostring(unit))
 		end
-	else
+	elseif not source.modelDisplayInfo then
+		-- A display id renders through SetDisplayInfo as is; no local table
+		-- can tell which retail ids this client's CreatureDisplayInfo holds.
 		local resolvable = WA.ResolveModelFile(source.model_fileId)
 			or (type(source.model_path) == "string" and source.model_path ~= "")
 		if not resolvable then
@@ -2501,12 +2510,12 @@ local function translateGroup(data, source, report)
 		reportDrop(report, "unsupported grow direction", label .. ": " .. tostring(data.grow))
 		data.grow = nil
 	end
-	for i = 1, table.getn(GROUP_DROP_KEYS) do
+	for i = 1, #GROUP_DROP_KEYS do
 		local key = GROUP_DROP_KEYS[i]
 		if source[key] then reportDrop(report, "unsupported group field", label .. ": " .. key) end
 	end
 	if source.border then
-		for i = 1, table.getn(GROUP_BORDER_ART_KEYS) do
+		for i = 1, #GROUP_BORDER_ART_KEYS do
 			if source[GROUP_BORDER_ART_KEYS[i]] ~= nil then
 				reportDrop(report, "group border art", label)
 				break
@@ -2536,12 +2545,6 @@ local function translateDisplay(source, report)
 		reportDrop(report, "unsupported region type", sourceType)
 	elseif sourceType == "model" then
 		translateModel(data, source, report)
-	elseif sourceType == "progresstexture"
-		and (source.orientation == "CLOCKWISE" or source.orientation == "ANTICLOCKWISE")
-		and not WA.hasTextureTransforms then
-		-- Circular fills need the client's corner transforms; with them the
-		-- orientation imports like any other.
-		reportDrop(report, "unsupported progress texture orientation", source.orientation)
 	end
 
 	translateAnchor(data, source, report)
@@ -2641,7 +2644,7 @@ local function buildTree(payload, report)
 		report.refused = "payload has invalid child displays"
 		return nil
 	end
-	local count = table.getn(children)
+	local count = #children
 	if count > 0 and not GROUP_TYPES[rootSource.regionType] then
 		report.refused = "child displays require a group root"
 		return nil
@@ -2688,7 +2691,7 @@ local function buildTree(payload, report)
 	local function walk(parentSource)
 		local list = parentSource.controlledChildren
 		if type(list) ~= "table" then return end
-		for i = 1, table.getn(list) do
+		for i = 1, #list do
 			if report.refused then return end
 			local child = byId[list[i]]
 			if child and child ~= rootSource and not seen[child] then
@@ -2722,13 +2725,13 @@ end
 -- *lost* children is pruned.
 local function pruneEmptyGroups(children, nodes, report)
 	local authored = {}
-	for i = 1, table.getn(nodes) do authored[nodes[i].parent] = true end
+	for i = 1, #nodes do authored[nodes[i].parent] = true end
 	local pruning = true
 	while pruning do
 		pruning = false
 		local hasChild = {}
-		for i = 1, table.getn(children) do hasChild[children[i].parent] = true end
-		for i = table.getn(children), 1, -1 do
+		for i = 1, #children do hasChild[children[i].parent] = true end
+		for i = #children, 1, -1 do
 			local child = children[i]
 			if GROUP_TYPES[child.regionType] and authored[child.id] and not hasChild[child.id] then
 				table.remove(children, i)
@@ -2768,7 +2771,7 @@ function WA.WA2Translate(payload)
 	-- child's own report is merged only once it survives, so a dropped display
 	-- never contributes code to the disclosure list.
 	local children, dropped = {}, {}
-	local nodeCount = table.getn(nodes)
+	local nodeCount = #nodes
 	for i = 1, nodeCount do
 		local node = nodes[i]
 		local label = tostring(node.source.id or "?")
@@ -2781,13 +2784,13 @@ function WA.WA2Translate(payload)
 			if childOk and child then
 				child.parent = node.parent
 				table.insert(children, child)
-				for n = 1, table.getn(childReport.dropped) do
+				for n = 1, #childReport.dropped do
 					table.insert(report.dropped, childReport.dropped[n])
 				end
-				for n = 1, table.getn(childReport.code) do
+				for n = 1, #childReport.code do
 					table.insert(report.code, childReport.code[n])
 				end
-				for n = 1, table.getn(childReport.foreignApiOrder or {}) do
+				for n = 1, #(childReport.foreignApiOrder or {}) do
 					local name = childReport.foreignApiOrder[n]
 					report.foreignApi = report.foreignApi or {}
 					report.foreignApiOrder = report.foreignApiOrder or {}
@@ -2796,7 +2799,7 @@ function WA.WA2Translate(payload)
 						table.insert(report.foreignApiOrder, name)
 					end
 				end
-				for n = 1, table.getn(childReport.wagoKeyOrder or {}) do
+				for n = 1, #(childReport.wagoKeyOrder or {}) do
 					local name = childReport.wagoKeyOrder[n]
 					report.wagoKeys = report.wagoKeys or {}
 					report.wagoKeyOrder = report.wagoKeyOrder or {}
@@ -2805,7 +2808,7 @@ function WA.WA2Translate(payload)
 						table.insert(report.wagoKeyOrder, name)
 					end
 				end
-				for n = 1, table.getn(childReport.foreignEnvOrder or {}) do
+				for n = 1, #(childReport.foreignEnvOrder or {}) do
 					local name = childReport.foreignEnvOrder[n]
 					report.foreignEnv = report.foreignEnv or {}
 					report.foreignEnvOrder = report.foreignEnvOrder or {}
@@ -2824,7 +2827,7 @@ function WA.WA2Translate(payload)
 		end
 	end
 	pruneEmptyGroups(children, nodes, report)
-	if nodeCount > 0 and table.getn(children) == 0 then
+	if nodeCount > 0 and #children == 0 then
 		report.refused = "none of this group's " .. nodeCount .. " auras could be imported"
 		return nil, report
 	end
@@ -2840,7 +2843,7 @@ local DETAIL_LIMIT = 6
 
 function WA.ImportSummary(pending, report)
 	local root = pending and pending.root or {}
-	local childCount = table.getn(pending and pending.children or {})
+	local childCount = #(pending and pending.children or {})
 	local header = "Importing \"" .. tostring(root.id or "Imported") .. "\"  ("
 		.. tostring(root.regionType or "unknown") .. ")"
 	if childCount == 1 then
@@ -2857,10 +2860,10 @@ function WA.ImportSummary(pending, report)
 			.. tostring(report.schemaAhead) .. "; this one reads " .. tostring(WA.SCHEMA_VERSION)
 			.. "). It will import, but anything that version added may come in at defaults.")
 	end
-	if table.getn(report and report.code or {}) > 0 then
+	if #(report and report.code or {}) > 0 then
 		table.insert(lines, "")
 		table.insert(lines, "Runs this author's Lua:")
-		for i = 1, table.getn(report.code) do
+		for i = 1, #report.code do
 			local item = report.code[i]
 			local state = item.active and "active" or "inactive"
 			table.insert(lines, "  " .. tostring(item.name) .. "  (" .. state .. ")")
@@ -2868,19 +2871,19 @@ function WA.ImportSummary(pending, report)
 			table.insert(lines, "    " .. source)
 		end
 	end
-	if table.getn(report and report.foreignApiOrder or {}) > 0 then
+	if #(report and report.foreignApiOrder or {}) > 0 then
 		table.insert(lines, "")
 		table.insert(lines, "That Lua calls WeakAuras functions this addon does not have. Each errors "
 			.. "where it stands; the rest of the aura is unaffected.")
-		for i = 1, table.getn(report.foreignApiOrder) do
+		for i = 1, #report.foreignApiOrder do
 			table.insert(lines, "  WeakAuras." .. tostring(report.foreignApiOrder[i]))
 		end
 	end
-	if table.getn(report and report.foreignEnvOrder or {}) > 0 then
+	if #(report and report.foreignEnvOrder or {}) > 0 then
 		table.insert(lines, "")
 		table.insert(lines, "It also calls WeakAuras helpers that live in the environment rather than "
 			.. "on that table, and these are not provided. Each errors where it stands.")
-		for i = 1, table.getn(report.foreignEnvOrder) do
+		for i = 1, #report.foreignEnvOrder do
 			table.insert(lines, "  " .. tostring(report.foreignEnvOrder[i]) .. "()")
 		end
 	end
@@ -2897,9 +2900,9 @@ function WA.ImportSummary(pending, report)
 			.. "client does not have and which takes a different number of names to rewrite. "
 			.. "UnitClassBase(unit) returns the token and the class id.")
 	end
-	if table.getn(report and report.dropped or {}) > 0 then
+	if #(report and report.dropped or {}) > 0 then
 		local groups, byReason = {}, {}
-		for i = 1, table.getn(report.dropped) do
+		for i = 1, #report.dropped do
 			local item = report.dropped[i]
 			local group = byReason[item.reason]
 			if not group then
@@ -2914,16 +2917,16 @@ function WA.ImportSummary(pending, report)
 				group.repeats[at] = group.repeats[at] + 1
 			else
 				table.insert(group.details, detail)
-				at = table.getn(group.details)
+				at = #group.details
 				group.seen[detail] = at
 				group.repeats[at] = 1
 			end
 		end
 		table.insert(lines, "")
 		table.insert(lines, "Not imported:")
-		for i = 1, table.getn(groups) do
+		for i = 1, #groups do
 			local group = groups[i]
-			local distinct = table.getn(group.details)
+			local distinct = #group.details
 			local shown = distinct
 			if shown > DETAIL_LIMIT then shown = DETAIL_LIMIT end
 			local parts = {}
@@ -2941,7 +2944,7 @@ function WA.ImportSummary(pending, report)
 			table.insert(lines, line)
 		end
 	end
-	if table.getn(report and report.wagoKeyOrder or {}) > 0 then
+	if #(report and report.wagoKeyOrder or {}) > 0 then
 		table.insert(lines, "")
 		table.insert(lines, "Wago bookkeeping (" .. table.concat(report.wagoKeyOrder, ", ")
 			.. ") is not carried.")
@@ -2954,9 +2957,8 @@ function WA.ImportSummary(pending, report)
 		if type(mods) == "table" then
 			local parts = {}
 			if mods.classicapi then table.insert(parts, "ClassicAPI " .. tostring(mods.classicapi)) end
-			if mods.superwow then table.insert(parts, "SuperWoW " .. tostring(mods.superwow)) end
 			if mods.nampower then table.insert(parts, "Nampower " .. tostring(mods.nampower)) end
-			if table.getn(parts) > 0 then
+			if #parts > 0 then
 				table.insert(lines, "  built with " .. table.concat(parts, ", "))
 			end
 		end

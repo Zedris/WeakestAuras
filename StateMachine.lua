@@ -75,7 +75,7 @@ WA.triggerSystems = {}
 -- ---------------------------------------------------------------------------
 
 function WA.RegisterTriggerSystem(types, system)
-	for i = 1, table.getn(types) do
+	for i = 1, #types do
 		WA.triggerSystems[types[i]] = system
 	end
 end
@@ -132,7 +132,7 @@ end
 local function acquireClone(rt, data, cloneId)
 	local pool = clonePool(data.regionType)
 	local frame
-	for i = table.getn(pool), 1, -1 do
+	for i = #pool, 1, -1 do
 		if pool[i]._waRegionSpec == rt then
 			frame = table.remove(pool, i)
 			break
@@ -187,7 +187,7 @@ local function releaseClone(entry, cloneId, frame, data, allowBase)
 		frame._waRegionType = entry.regionType
 		frame._waRegionSpec = entry.spec
 		local pool = clonePool(entry.regionType)
-		for i = 1, table.getn(pool) do
+		for i = 1, #pool do
 			if pool[i] == frame then return end
 		end
 		table.insert(pool, frame)
@@ -204,7 +204,7 @@ local function releaseNonBaseClones(entry, data)
 	for cloneId in pairs(entry.byClone) do
 		if cloneId ~= "" then table.insert(stale, cloneId) end
 	end
-	for i = 1, table.getn(stale) do
+	for i = 1, #stale do
 		local cloneId = stale[i]
 		releaseClone(entry, cloneId, entry.byClone[cloneId], data)
 	end
@@ -291,7 +291,7 @@ local function CollapseStaleClones(id, allstates)
 	for cloneId in pairs(entry.byClone) do
 		if cloneId ~= "" and not allstates[cloneId] then table.insert(stale, cloneId) end
 	end
-	for i = 1, table.getn(stale) do
+	for i = 1, #stale do
 		local cloneId = stale[i]
 		releaseClone(entry, cloneId, entry.byClone[cloneId], data)
 	end
@@ -367,7 +367,7 @@ function WA.RegionCensus()
 		end
 	end
 	for regionType, pool in pairs(clonePools) do
-		local n = table.getn(pool)
+		local n = #pool
 		if n > 0 then
 			pooled[regionType] = n
 			pooledTotal = pooledTotal + n
@@ -736,7 +736,7 @@ function WA.DisplayLoadState(id)
 
 	local nLoaded, nStandby, nLeaves = 0, 0, 0
 	local children = data.controlledChildren or {}
-	for i = 1, table.getn(children) do
+	for i = 1, #children do
 		local _, cl, cs, cn = WA.DisplayLoadState(children[i])
 		nLoaded, nStandby, nLeaves = nLoaded + cl, nStandby + cs, nLeaves + cn
 	end
@@ -762,7 +762,7 @@ end
 function WA.AddGroup(data)
 	SetRegion(data) -- runs groupModify: positions frame, sizes box, draws border
 	local kids = data.controlledChildren or {}
-	for i = 1, table.getn(kids) do
+	for i = 1, #kids do
 		local cd = WeakestAurasDB.displays[kids[i]]
 		if cd and WA.IsGroup(cd) then
 			WA.AddGroup(cd)
@@ -882,7 +882,7 @@ function addDisplay(data, simpleChange)
 	end
 
 	local triggers = data.triggers
-	local numTriggers = table.getn(triggers)
+	local numTriggers = #triggers
 
 	-- Collapse-first baseline (WA2's pAdd): a recompile reuses the live region
 	-- frame, so force it hidden before re-deriving -- otherwise a recompile that now
@@ -1022,13 +1022,13 @@ end
 -- re-anchors children that already exist.
 function WA.AddMany(list)
 	local ids = {}
-	for i = 1, table.getn(list or {}) do
+	for i = 1, #(list or {}) do
 		local data = list[i]
 		if data and data.id then ids[data.id] = true end
 	end
 	for id in pairs(ids) do resetAnchorCycle(WeakestAurasDB.displays[id]) end
 	local order = dependencyOrder(ids)
-	for i = 1, table.getn(order) do
+	for i = 1, #order do
 		local id = order[i]
 		local data = WeakestAurasDB.displays[id]
 		if data then WA.safecall(id, WA.Add, data) end
@@ -1039,7 +1039,7 @@ function WA.AddAllDisplays()
 	local ids = {}
 	for id in pairs(WeakestAurasDB.displays) do ids[id] = true end
 	local order = dependencyOrder(ids)
-	for i = 1, table.getn(order) do
+	for i = 1, #order do
 		local id = order[i]
 		local data = WeakestAurasDB.displays[id]
 		if data then WA.safecall(id, WA.Add, data) end
@@ -1070,7 +1070,7 @@ function WA.GetClonePoolStats(regionType)
 	end
 	for kind, pool in pairs(clonePools) do
 		local out = bucket(kind)
-		out.pooled = table.getn(pool)
+		out.pooled = #pool
 	end
 	if regionType then return stats[regionType] or { live = 0, pooled = 0 } end
 	return stats
@@ -1098,7 +1098,7 @@ local function collectLeaves(id, into)
 	if not data then return end
 	if WA.IsGroup(data) then
 		local kids = data.controlledChildren or {}
-		for i = 1, table.getn(kids) do collectLeaves(kids[i], into) end
+		for i = 1, #kids do collectLeaves(kids[i], into) end
 	else
 		into[id] = true
 	end
@@ -1250,7 +1250,7 @@ end
 -- drives PriorityShow/PriorityHide across the bucket's children.
 function WA.ToggleForcedMany(ids)
 	local leaves = {}
-	for i = 1, table.getn(ids) do collectLeaves(ids[i], leaves) end
+	for i = 1, #ids do collectLeaves(ids[i], leaves) end
 	local allPinned = true
 	for lid in pairs(leaves) do if not pinned[lid] then allPinned = false; break end end
 	for lid in pairs(leaves) do
@@ -1284,7 +1284,7 @@ end
 -- The same roll-up across several displays (a bucket header's eye).
 function WA.ForcedStateMany(ids)
 	local leaves = {}
-	for i = 1, table.getn(ids) do collectLeaves(ids[i], leaves) end
+	for i = 1, #ids do collectLeaves(ids[i], leaves) end
 	local count, all2, all0 = 0, 0, 0
 	for lid in pairs(leaves) do
 		count = count + 1

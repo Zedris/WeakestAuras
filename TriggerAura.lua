@@ -33,8 +33,19 @@ local perId = {}
 -- unregister a TI that isn't there.
 local activeIds = {}
 
-local MAX_SLOT = 40 -- safe superset of any plausible buff/debuff cap on this client
-local memo = {} -- per-tick unit|filter -> aura list; several triggers share one scan
+-- pool[unit][filter] = { n = live entries, gen = the scan that filled them,
+-- [1..] = reusable aura tables }. Several triggers on one unit share one scan,
+-- and the tables outlive the tick so that a steady-state scan allocates nothing.
+-- Entries above `n` still hold an earlier scan's values, so every walk of a
+-- list is bounded by `list.n`, never `#list`.
+--
+-- Safe only while no aura table outlives the scan that filled it: nothing may
+-- store one. updateTriggerInfoState copies scalars into the state, and a match
+-- is consumed before the next findMatch can refill what it points at.
+local pool = {}
+local poolSeen = {} -- unit -> the scan that last read it, for the sweep in scanTick
+local scanGen = 0
+local slots = {} -- GetAuraSlots fill target, reused across scans
 
 local function cmp(op, a, b)
 	if a == nil or b == nil then return false end
@@ -47,39 +58,87 @@ local function cmp(op, a, b)
 	return false
 end
 
--- Stops at the first nil slot: the aura list is a compacting array on this
--- client. Memoized per unit and filter for the tick -- two levels rather than
--- a concatenated key, since this lookup runs per entry per filter per trigger.
+-- Refills one pooled entry through UnitAuraBySlot, the same aura as
+-- GetAuraDataBySlot pushed as values instead of built into a fresh ~22-field
+-- table. Reads up to position 10 (spellId) and stops: position 13,
+-- `castByPlayer`, means "cast by any player", not "cast by me", and leaving it
+-- unread keeps an ownership test from being built on it. `sourceGUID` has no
+-- position at all, so it is cleared for casterGUID to resolve on demand --
+-- clearing matters, since the entry is reused and the last scan's caster would
+-- otherwise read as this aura's.
+local function fillEntry(a, unit, slot)
+	local name, icon, count, dispelType, duration, expirationTime, source,
+		_, _, spellId = C_UnitAuras.UnitAuraBySlot(unit, slot)
+	a.name = name
+	a.icon = icon
+	a.applications = count
+	a.dispelName = dispelType
+	a.duration = duration
+	a.expirationTime = expirationTime
+	a.sourceUnit = source
+	a.spellId = spellId
+	a.unit = unit
+	a.slot = slot
+	a.sourceGUID = nil
+	a.guidChecked = nil
+end
+
+-- One GetAuraSlots walk plus a positional by-slot read per aura; a by-index
+-- loop would re-walk the aura array for every index. Slots come back in index
+-- order, so a list position is still the aura's C_UnitAuras index. Shared per
+-- unit and filter for the scan -- two levels rather than a concatenated key,
+-- since this lookup runs per entry per filter per trigger.
 local function scanUnit(unit, filter)
-	local byFilter = memo[unit]
+	poolSeen[unit] = scanGen
+	local byFilter = pool[unit]
 	if not byFilter then
 		byFilter = {}
-		memo[unit] = byFilter
+		pool[unit] = byFilter
 	end
 	local list = byFilter[filter]
-	if list then return list end
-	list = {}
-	for i = 1, MAX_SLOT do
-		local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
-		if not aura then break end
-		list[i] = aura
+	if not list then
+		list = { n = 0, gen = -1 }
+		byFilter[filter] = list
 	end
-	byFilter[filter] = list
+	if list.gen == scanGen then return list end
+	list.gen = scanGen
+	local _, n = C_UnitAuras.GetAuraSlots(unit, filter, nil, nil, slots)
+	for i = 1, n do
+		local a = list[i]
+		if not a then
+			a = {}
+			list[i] = a
+		end
+		fillEntry(a, unit, slots[i])
+	end
+	list.n = n
 	return list
+end
+
+-- The caster's GUID, the only field that separates "nobody knows who cast
+-- this" from "someone we know cast it and no token names them": the tuple's
+-- `sourceUnit` is nil for both. Pays one GetAuraDataBySlot for that ambiguous
+-- aura alone and caches the answer on the pooled entry, so findMatch's counting
+-- walk does not pay it again. Slot ids hold for the frame, and this runs inside
+-- the scan that filled the entry.
+local function casterGUID(aura)
+	if not aura.guidChecked then
+		aura.guidChecked = true
+		local d = C_UnitAuras.GetAuraDataBySlot(aura.unit, aura.slot)
+		aura.sourceGUID = d and d.sourceGUID or nil
+	end
+	return aura.sourceGUID
 end
 
 local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 
--- SpellDispelType.dbc ids 1..4, in the order the Dispel Type selector offers
--- them. C_Spell.GetSpellDispelType answers the id and nothing in Lua maps an id
--- to the localized name the descriptor carries, so this is the bridge for an
--- aura that never reached a descriptor. An id that stopped lining up would cost
--- a filter match, never produce a wrong one.
+-- The Dispel Type condition's values: SpellDispelType.dbc ids 1..4, the names
+-- an aura's dispelName carries.
 local DISPEL_TYPES = { "Magic", "Curse", "Disease", "Poison" }
 
 local playerGuid
 local function playerGUID()
-	if not playerGuid then playerGuid = UnitGUID and UnitGUID("player") end
+	if not playerGuid then playerGuid = UnitGUID("player") end
 	return playerGuid
 end
 
@@ -96,7 +155,7 @@ end
 local function resolveNameIcon(ti)
 	local entries = ti.entries or {}
 	local firstRaw
-	for i = 1, table.getn(entries) do
+	for i = 1, #entries do
 		local entry = entries[i]
 		firstRaw = firstRaw or entry.raw
 		local id = entry.id or WA.ResolveSpellID(entry.raw)
@@ -119,7 +178,7 @@ end
 local function buildEntries(names)
 	local entries = {}
 	names = names or {}
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local raw = names[i]
 		if raw and raw ~= "" then
 			table.insert(entries, { raw = raw, id = tonumber(raw) })
@@ -134,7 +193,7 @@ local function buildTriggerInfo(id, triggernum, t)
 	-- With no names configured there is nothing to find, but showOnMissing and
 	-- showAlways are defined by the absence of a match, so they still need a
 	-- state; only showOnActive can never show and is skipped.
-	if table.getn(entries) == 0 and showOn == "showOnActive" then return nil end
+	if #entries == 0 and showOn == "showOnActive" then return nil end
 	local filters
 	if t.debuffType == "BOTH" then filters = { "HELPFUL", "HARMFUL" }
 	else filters = { t.debuffType or "HELPFUL" } end
@@ -147,8 +206,8 @@ local function buildTriggerInfo(id, triggernum, t)
 		-- state for one token.
 		multiUnit = WA.MultiUnitFamily(t),
 		-- Upstream's `multi`, which is not a family of tokens at all: the clones
-		-- come from the aura cache's tracked GUIDs, one per unit carrying a match,
-		-- addressable or not.
+		-- come from the GUIDs the combat log saw gain an aura, one per unit
+		-- carrying a match.
 		multiGuid = t.unit == "multi",
 		filters = filters,
 		entries = entries,
@@ -167,6 +226,45 @@ local function buildTriggerInfo(id, triggernum, t)
 	}
 end
 
+-- Multi-target (`unit = "multi"`): the subject is every unit in the pull rather
+-- than one token, so the combat log supplies the unit list, as it does for
+-- upstream's BuffTrigger2 (§5, matchDataMulti). A GUID enters when one of the
+-- watched auras lands on it and leaves when it dies; the scan reads it like any
+-- other unit. Admitting only watched spells keeps the list to the units that can
+-- match, not every unit in a raid that gained any aura. The event is registered
+-- only while a multi trigger is loaded, since ClassicAPI builds no combat log
+-- payload that nothing listens to.
+local multiGuids = {}
+local multiSpells = {} -- spellId or name -> true, from every loaded multi trigger's entries
+local multiFrame = CreateFrame("Frame")
+multiFrame:SetScript("OnEvent", function()
+	local subevent = arg2
+	if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_APPLIED_DOSE"
+		or subevent == "SPELL_AURA_REFRESH" then
+		if multiSpells[arg12] or multiSpells[arg13] then multiGuids[arg8] = true end
+	elseif subevent == "UNIT_DIED" or subevent == "UNIT_DESTROYED" then
+		multiGuids[arg8] = nil
+	end
+end)
+
+-- UNIT_AURA is registered for the tokens the loaded triggers read, so raid
+-- traffic for units nothing watches never reaches the scan nudge. A family adds
+-- every token it can iterate; a multi trigger adds none, since its GUIDs are
+-- not tokens UNIT_AURA names.
+local auraFrame = CreateFrame("Frame")
+auraFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+local FAMILY_TOKENS = {}
+do
+	local function append(list, prefix, n)
+		for i = 1, n do table.insert(list, prefix .. i) end
+		return list
+	end
+	FAMILY_TOKENS.party = append({ "player" }, "party", 4)
+	FAMILY_TOKENS.raid = append({}, "raid", 40)
+	FAMILY_TOKENS.group = append(append({ "player" }, "party", 4), "raid", 40)
+	FAMILY_TOKENS.nameplate = append({}, "nameplate", 40)
+end
+
 -- scanIndex[unit] = { ti, ti, ... } -- a ti may need more than one filter
 -- (debuffType = "BOTH"), so indexing is by unit only; findMatch below walks
 -- each ti's own filters/entries against that unit's (memoized) aura lists.
@@ -180,8 +278,48 @@ end
 local function unregisterTI(ti)
 	local list = scanIndex[ti._key]
 	if not list then return end
-	for i = table.getn(list), 1, -1 do
+	for i = #list, 1, -1 do
 		if list[i] == ti then table.remove(list, i) end
+	end
+end
+
+-- Re-derive both event registrations from scanIndex after a load or unload.
+local function refreshEvents()
+	local units, seen = {}, {}
+	local function add(token)
+		if not seen[token] then
+			seen[token] = true
+			table.insert(units, token)
+		end
+	end
+	table.wipe(multiSpells)
+	local multi = false
+	for key, tis in pairs(scanIndex) do
+		if #tis > 0 then
+			if key == "multi" then
+				multi = true
+				for j = 1, #tis do
+					local entries = tis[j].entries
+					for e = 1, #entries do
+						multiSpells[entries[e].id or entries[e].raw] = true
+					end
+				end
+			elseif FAMILY_TOKENS[key] then
+				local tokens = FAMILY_TOKENS[key]
+				for i = 1, #tokens do add(tokens[i]) end
+			else
+				add(key)
+			end
+		end
+	end
+	-- A unit registration keeps its kind and units until it is unregistered.
+	auraFrame:UnregisterEvent("UNIT_AURA")
+	if #units > 0 then auraFrame:RegisterUnitEvent("UNIT_AURA", unpack(units)) end
+	if multi then
+		multiFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+	else
+		multiFrame:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+		table.wipe(multiGuids)
 	end
 end
 
@@ -192,7 +330,7 @@ function TriggerAura.Add(data)
 	TriggerAura.Delete(data.id)
 	local list = {}
 	perId[data.id] = list
-	for triggernum = 1, table.getn(data.triggers) do
+	for triggernum = 1, #data.triggers do
 		local t = WA.GetTrigger(data, triggernum)
 		if t and t.type == "aura" then
 			local ti = buildTriggerInfo(data.id, triggernum, t)
@@ -207,15 +345,16 @@ end
 -- sees them. Only touches ids this system actually compiled (perId[id]).
 function TriggerAura.LoadDisplays(ids)
 	local registered = false
-	for k = 1, table.getn(ids) do
+	for k = 1, #ids do
 		local id = ids[k]
 		local list = perId[id]
 		if list and not activeIds[id] then
 			activeIds[id] = true
-			for i = 1, table.getn(list) do registerTI(list[i]) end
+			for i = 1, #list do registerTI(list[i]) end
 			registered = true
 		end
 	end
+	if registered then refreshEvents() end
 	-- Re-derive current match state synchronously (GenericTrigger does the same via
 	-- force_events). WA.Add collapses the region before load, so without this an
 	-- already-matching aura would blink hidden until the 0.2s scan ticker's next fire.
@@ -225,16 +364,19 @@ end
 -- Unload: pull this display's TIs out of scanIndex (it stops being scanned) but
 -- keep them in perId, so a later reload re-registers without recompiling.
 function TriggerAura.UnloadDisplays(ids)
-	for k = 1, table.getn(ids) do
+	local unregistered = false
+	for k = 1, #ids do
 		local id = ids[k]
 		if activeIds[id] then
 			activeIds[id] = nil
 			local list = perId[id]
 			if list then
-				for i = 1, table.getn(list) do unregisterTI(list[i]) end
+				for i = 1, #list do unregisterTI(list[i]) end
+				unregistered = true
 			end
 		end
 	end
+	if unregistered then refreshEvents() end
 end
 
 function TriggerAura.Delete(id)
@@ -247,7 +389,7 @@ end
 function TriggerAura.Rename(oldId, newId)
 	local list = perId[oldId]
 	if not list then return end
-	for i = 1, table.getn(list) do list[i].id = newId end
+	for i = 1, #list do list[i].id = newId end
 	perId[newId] = list
 	perId[oldId] = nil
 	if activeIds[oldId] then
@@ -350,9 +492,6 @@ local AURA_CONDITIONS = {
 	casterName = { display = "Caster Name", type = "string" },
 	unitCaster = { display = "Caster Unit", type = "string" },
 	index = { display = "Aura Slot", type = "number" },
-	-- True for an aura recovered from the overflow cache rather than read off the
-	-- descriptor. Reachable so a display can say why it shows no stack count.
-	overflow = { display = "Overflow", type = "bool" },
 }
 
 function TriggerAura.GetTriggerConditions(data, triggernum)
@@ -369,27 +508,30 @@ local function passesMatch(ti, aura)
 	-- narrowed by naming the few auras it shouldn't catch. Same entry shape, so
 	-- an id entry is compared by spellId and a text one by name.
 	local ignore = ti.ignoreEntries
-	for i = 1, (ignore and table.getn(ignore) or 0) do
+	for i = 1, (ignore and #ignore or 0) do
 		local e = ignore[i]
 		if (e.id and aura.spellId == e.id) or (not e.id and aura.name == e.raw) then
 			return false
 		end
 	end
 	-- Caster attribution is best-effort here: it comes from ClassicAPI's
-	-- SMSG_SPELL_GO cache (SuperWoW GUIDs), so an aura active at login -- or any
+	-- SMSG_SPELL_GO cache, so an aura active at login -- or any
 	-- aura when the cast packet wasn't observed -- reports no caster at all.
 	-- Reject only when we positively know the caster is someone else; an unknown
 	-- caster can't be proven foreign, so let it pass rather than hide a
 	-- genuinely-own buff.
 	--
-	-- Test sourceGUID rather than sourceUnit: the GUID is set whenever a caster
-	-- is known, while the token is nil for any caster outside token range, which
-	-- would read as "unknown" and pass someone else's debuff.
+	-- A resolved token settles most auras, since ClassicAPI tries `player`
+	-- before any other token: a caster that is us always names us. Only a
+	-- caster no token resolves for reaches the GUID, the sole field that tells a
+	-- known foreign caster from an unknown one -- letting the first pass as
+	-- "unknown" is how a stranger's debuff shows up as ours.
 	if ti.ownOnly then
-		if aura.sourceGUID ~= nil then
-			if not WA.AuraOverflow.SameGuid(aura.sourceGUID, playerGUID()) then return false end
-		elseif aura.sourceUnit ~= nil and aura.sourceUnit ~= "player" then
-			return false
+		if aura.sourceUnit ~= nil then
+			if aura.sourceUnit ~= "player" then return false end
+		else
+			local guid = casterGUID(aura)
+			if guid ~= nil and guid ~= playerGUID() then return false end
 		end
 	end
 	-- Any player caster, as against ownOnly's "me". Inherits the same
@@ -430,117 +572,6 @@ local function passesMatch(ti, aura)
 	return true
 end
 
--- ---------------------------------------------------------------------------
--- The cache readers. AuraOverflow.lua holds what Nampower's aura-cast events
--- carried, keyed by target GUID, and two different questions are asked of it.
---
--- Overflow fallback: a unit descriptor carries 16 harmful slots and a raid boss
--- carries more; the ones that got no slot are never transmitted, so a HARMFUL
--- miss on a unit we can address is not proof of absence. Upstream has no
--- counterpart -- retail has no aura cap.
---
--- Multi-target (`unit = "multi"`): the store *is* the unit list, because the
--- subject is every mob in the pull rather than the one being targeted. Upstream
--- builds the same table out of the combat log (§5, BuffTrigger2's
--- matchDataMulti) and clones per destination GUID; ours is fed by Nampower
--- instead, so the durations are the server's own rather than a guess.
--- ---------------------------------------------------------------------------
-
--- Gate result per unit for the tick. Reconcile costs a descriptor scan and
--- evicts as it goes, so several triggers on one unit must not each run it.
-local gateMemo = {}
-
--- An AuraData-shaped table built from a cache entry, marked so the filters that
--- degrade on it can tell, and so a display can say why.
-local function synthesise(cached, spellId)
-	local name, _, icon = GetSpellInfo(spellId)
-	local duration = cached.duration or 0
-	local dispelType = C_Spell and C_Spell.GetSpellDispelType and C_Spell.GetSpellDispelType(spellId)
-	return {
-		name = cached.name or name,
-		icon = icon,
-		spellId = spellId,
-		-- Only the descriptor counts stacks, so an overflow entry reports the one
-		-- application its cast event proves.
-		applications = 1,
-		duration = duration,
-		expirationTime = duration > 0 and (cached.start + duration) or 0,
-		dispelName = dispelType and DISPEL_TYPES[dispelType] or nil,
-		isHarmful = cached.harmful ~= false,
-		isHelpful = cached.harmful == false,
-		-- Left as a GUID rather than resolved to a unit token: whether an
-		-- arbitrary caster's GUID addresses a unit here is not established, and
-		-- every Unit* call downstream would inherit the guess. sourceUnit is set
-		-- only for the one caster that can be named without one.
-		sourceGUID = cached.caster,
-		sourceUnit = WA.AuraOverflow.SameGuid(cached.caster, playerGUID()) and "player" or nil,
-		overflow = true,
-	}
-end
-
-local function cacheEnabled()
-	local AO = WA.AuraOverflow
-	if not (AO and AO.Enabled()) then return nil end
-	if WA.Options().auraOverflow == false then return nil end
-	return AO
-end
-
-local function wants(ti, filter)
-	for fi = 1, table.getn(ti.filters) do
-		if ti.filters[fi] == filter then return true end
-	end
-	return false
-end
-
--- This ti's match against one cached GUID: its entries in configured (priority)
--- order, first one that passes wins, exactly as findMatch walks a descriptor.
--- `kinds` is what the caller will accept -- the overflow reader takes harmful
--- only, a multi trigger takes whatever its own Aura Type asked for.
-local function storeMatch(AO, ti, guid, kinds)
-	-- Naming the caster is what picks our own copy out of several holding the
-	-- same debuff; the longest-remaining one would otherwise answer, and
-	-- passesMatch would then reject it and report the aura missing.
-	local caster = ti.ownOnly and playerGUID() or nil
-
-	for e = 1, table.getn(ti.entries) do
-		local entry = ti.entries[e]
-		local cached, spellId
-		if entry.id then
-			cached, spellId = AO.Get(guid, entry.id, caster), entry.id
-		else
-			cached, spellId = AO.GetByName(guid, entry.raw, caster)
-		end
-		if cached then
-			local aura = synthesise(cached, spellId)
-			local filter = aura.isHarmful and "HARMFUL" or "HELPFUL"
-			if kinds[filter] and passesMatch(ti, aura) then
-				return { aura = aura, filter = filter }
-			end
-		end
-	end
-	return nil
-end
-
-local HARMFUL_ONLY = { HARMFUL = true }
-
-local function overflowMatch(ti, unit)
-	local AO = cacheEnabled()
-	if not AO then return nil end
-	if not wants(ti, "HARMFUL") then return nil end
-
-	local guid = UnitGUID and UnitGUID(unit)
-	if not guid then return nil end
-
-	local gate = gateMemo[unit]
-	if gate == nil then
-		gate = AO.Reconcile(unit, guid) and true or false
-		gateMemo[unit] = gate
-	end
-	if not gate then return nil end
-
-	return storeMatch(AO, ti, guid, HARMFUL_ONLY)
-end
-
 -- Forward per-ti match: walk this ti's entries in configured (priority) order,
 -- each against each of its filters, first passing hit wins. Small n (a
 -- handful of entries/filters, <=40 auras per scan) makes this cheaper than
@@ -548,15 +579,15 @@ end
 -- The winner also carries `count`/`stacksTotal` -- upstream's matchCount and
 -- totalStacks (§5): every matching aura instance on this unit counted once (an
 -- aura matching two entries is one aura), and their stacks summed. The second
--- walk re-reads scanUnit's per-tick memo, so it costs no second descriptor scan.
+-- walk re-reads scanUnit's pooled list, so it costs no second descriptor scan.
 local function findMatch(ti, unit)
 	local best
-	for e = 1, table.getn(ti.entries) do
+	for e = 1, #ti.entries do
 		local entry = ti.entries[e]
-		for fi = 1, table.getn(ti.filters) do
+		for fi = 1, #ti.filters do
 			local filter = ti.filters[fi]
 			local list = scanUnit(unit, filter)
-			for i = 1, table.getn(list) do
+			for i = 1, list.n do
 				local aura = list[i]
 				local ok
 				if entry.id then ok = aura.spellId == entry.id
@@ -570,23 +601,14 @@ local function findMatch(ti, unit)
 		end
 		if best then break end
 	end
-	if not best then
-		best = overflowMatch(ti, unit)
-		-- The cache answers only after the descriptor found nothing, so its one
-		-- entry is the whole count.
-		if best then
-			best.count = 1
-			best.stacksTotal = best.aura.applications or 0
-		end
-		return best
-	end
+	if not best then return nil end
 	local count, stacksTotal = 0, 0
-	for fi = 1, table.getn(ti.filters) do
+	for fi = 1, #ti.filters do
 		local list = scanUnit(unit, ti.filters[fi])
-		for i = 1, table.getn(list) do
+		for i = 1, list.n do
 			local aura = list[i]
 			local matched = false
-			for e = 1, table.getn(ti.entries) do
+			for e = 1, #ti.entries do
 				local entry = ti.entries[e]
 				if (entry.id and aura.spellId == entry.id)
 					or (not entry.id and aura.name == entry.raw) then
@@ -623,13 +645,7 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 	local states = WA.GetTriggerStateForTrigger(ti.id, ti.triggernum)
 	if not states then return false end
 
-	-- A multi-target clone's `unit` is a target GUID out of the cache, not a
-	-- token, and no Unit* call may be made against it: whether an arbitrary GUID
-	-- addresses a unit on this client is not established, and every such call
-	-- would inherit the guess (the same reason synthesise leaves a caster as a
-	-- GUID). The state carries the aura's own name and icon instead, which is
-	-- what a Sap timer on an unseen mob is showing anyway.
-	local token = (not ti.multiGuid) and unit or nil
+	local token = unit -- a multi-target clone's GUID is a ClassicAPI unit token too
 
 	local aura = match and match.aura
 	local matched = aura ~= nil
@@ -678,7 +694,7 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 
 	set("show", true)
 	set("active", matched and true or false)
-	set("inRange", (token and UnitInRange and UnitInRange(token)) and true or false)
+	set("inRange", (token and UnitInRange(token)) and true or false)
 	-- Per-unit here; the family scans overwrite both with the trigger-wide
 	-- totals afterwards, which is what upstream's matchCount/totalStacks are.
 	set("matchCount", match and (match.count or 1) or 0)
@@ -699,7 +715,6 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 		set("casterName", aura.sourceUnit and UnitName(aura.sourceUnit) or nil)
 		set("filter", match.filter)
 		set("index", match.index)
-		set("overflow", aura.overflow and true or false)
 	else
 		-- showOnMissing / showAlways with no match: fallback identity. The
 		-- matched-only fields are cleared so a condition on them (Caster Name,
@@ -719,7 +734,6 @@ local function updateTriggerInfoState(ti, unit, cloneId, match)
 		set("dispelName", nil)
 		set("filter", nil)
 		set("index", nil)
-		set("overflow", false)
 	end
 
 	if curChanged then state.changed = true end
@@ -772,7 +786,7 @@ local function scanMultiUnit(ti)
 	for cloneId in pairs(states) do
 		if cloneId ~= "" and not seen[cloneId] then table.insert(stale, cloneId) end
 	end
-	for i = 1, table.getn(stale) do
+	for i = 1, #stale do
 		states[stale[i]] = nil
 		dirty = true
 	end
@@ -780,37 +794,37 @@ local function scanMultiUnit(ti)
 	return dirty
 end
 
--- How many clones one multi-target trigger may stand up. Nothing bounds how many
--- GUIDs a long pull leaves in the cache beyond its own sweep, and a display with
--- a state per mob in the instance is not what anyone asked for -- the same
--- reason a dynamic group carries a `limit`. GUID order decides who is kept,
--- which is arbitrary but stable, so the survivors do not churn between ticks.
+-- How many clones one multi-target trigger may stand up. A big pull can put
+-- more units in range than that, and a display with a state per mob is not what
+-- anyone asked for -- the same reason a dynamic group carries a `limit`. GUID
+-- order decides who is kept, which is arbitrary but stable, so the survivors do
+-- not churn between ticks.
 local MULTI_CLONE_LIMIT = 40
 
--- One scan of a `multi` ti: the aura cache's tracked GUIDs are the unit list,
--- one clone per GUID that carries a match, and every clone whose match has gone
--- dropped -- the same seen/stale sweep scanMultiUnit runs over a family's
--- departed members. Nothing here is gated on a descriptor: a GUID no token
--- points at is the case this exists for (§5).
+-- One scan of a `multi` ti: the tracked GUIDs are the unit list, each read
+-- through its GUID token like any other unit, one clone per GUID that carries a
+-- match, and every clone whose match has gone dropped -- the same seen/stale
+-- sweep scanMultiUnit runs over a family's departed members. A GUID the client
+-- no longer resolves (out of range, despawned) leaves the list here.
 local function scanMultiGuid(ti)
 	local states = WA.GetTriggerStateForTrigger(ti.id, ti.triggernum)
 	if not states then return false end
-	local AO = cacheEnabled()
-	local kinds = { HARMFUL = wants(ti, "HARMFUL"), HELPFUL = wants(ti, "HELPFUL") }
-
-	local guids = AO and AO.TrackedGuids() or {}
+	local guids = {}
+	for guid in pairs(multiGuids) do
+		if UnitExists(guid) then table.insert(guids, guid) else multiGuids[guid] = nil end
+	end
 	table.sort(guids)
 	local seen, dirty, clones = {}, false, 0
 	local total, totalStacks = 0, 0
-	for i = 1, table.getn(guids) do
+	for i = 1, #guids do
 		if clones >= MULTI_CLONE_LIMIT then break end
 		local guid = guids[i]
-		local match = storeMatch(AO, ti, guid, kinds)
+		local match = findMatch(ti, guid)
 		if match then
 			clones = clones + 1
 			seen[guid] = true
-			total = total + 1
-			totalStacks = totalStacks + (match.aura.applications or 0)
+			total = total + (match.count or 1)
+			totalStacks = totalStacks + (match.stacksTotal or 0)
 			if updateTriggerInfoState(ti, guid, guid, match) then dirty = true end
 		end
 	end
@@ -819,7 +833,7 @@ local function scanMultiGuid(ti)
 	for cloneId in pairs(states) do
 		if cloneId ~= "" and not seen[cloneId] then table.insert(stale, cloneId) end
 	end
-	for i = 1, table.getn(stale) do
+	for i = 1, #stale do
 		states[stale[i]] = nil
 		dirty = true
 	end
@@ -831,11 +845,11 @@ local lastScan
 local function scanTick()
 	WA.ProfBegin("aura scan")
 	lastScan = GetTime()
-	WA.wipe(memo)
-	WA.wipe(gateMemo)
+	-- A new generation is what invalidates the pool; its tables are kept.
+	scanGen = scanGen + 1
 	local dirty = {}
 	for _, tis in pairs(scanIndex) do
-		for j = 1, table.getn(tis) do
+		for j = 1, #tis do
 			local ti = tis[j]
 			if not WA.forced[ti.id] then -- a forced leaf's state is owned by the preview
 				local changed
@@ -850,29 +864,41 @@ local function scanTick()
 			end
 		end
 	end
+	-- Multi-target triggers scan by GUID, so without this the pool would keep a
+	-- list for every mob a session ever saw. Kept tokens refill in place; a
+	-- dropped unit costs one rebuild if it comes back.
+	for unit, gen in pairs(poolSeen) do
+		if gen ~= scanGen then
+			pool[unit] = nil
+			poolSeen[unit] = nil
+		end
+	end
 	for id in pairs(dirty) do WA.UpdatedTriggerState(id) end
 	WA.ProfEnd("aura scan")
 end
 TriggerAura.scanTick = scanTick
--- Debug/test accessor: the harness drives a scan without the 0.2s ticker.
+-- Debug/test accessors: the harness drives a scan without the 0.2s ticker, and
+-- reads how many units the pool holds.
 WA.AuraScanTick = scanTick
+function WA.AuraPoolUnits()
+	local n = 0
+	for _ in pairs(pool) do n = n + 1 end
+	return n
+end
 
 WA.RegisterTriggerSystem({ "aura" }, TriggerAura)
 
 -- 0.2s poll is the real drive; UNIT_AURA (unreliable on refresh) and
--- PLAYER_TARGET_CHANGED are just latency nudges. UNIT_AURA is deliberately
--- unfiltered by arg1 -- it double-fires under two addressing schemes here,
--- harmless since scanTick doesn't count fires.
+-- PLAYER_TARGET_CHANGED are just latency nudges, on auraFrame (UNIT_AURA's
+-- tokens set by refreshEvents). A unit reachable through two watched tokens fires UNIT_AURA
+-- once per token, harmless since scanTick doesn't count fires.
 TriggerAura.ticker = C_Timer.NewTicker(0.2, scanTick)
 
-local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("UNIT_AURA")
-eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 -- Coalesced to one scan per frame: GetTime is frame-locked on this client, so
 -- an equal stamp means a scan already ran this frame -- and raid combat
 -- delivers UNIT_AURA in same-frame bursts that were each a full rescan. Only
 -- the nudge dedupes; a direct scanTick call (LoadDisplays' synchronous
 -- re-derive) always runs.
-eventFrame:SetScript("OnEvent", function()
+auraFrame:SetScript("OnEvent", function()
 	if lastScan ~= GetTime() then scanTick() end
 end)

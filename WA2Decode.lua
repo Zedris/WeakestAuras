@@ -50,7 +50,7 @@ local function decode6(str)
 	while true do
 		if bits >= 8 then
 			n = n + 1
-			out[n] = string.char(math.mod(bitfield, 256))
+			out[n] = string.char(math.fmod(bitfield, 256))
 			bitfield = math.floor(bitfield / 256)
 			bits = bits - 8
 		end
@@ -199,8 +199,8 @@ end
 
 -- Sign / 11-bit exponent / 52-bit mantissa reassembled by arithmetic; Lua 5.0
 -- has no string.unpack or bit library. Denormals and inf/nan are decoded for
--- completeness, but no aura carries one. `WA.INF` is the Lua 5.0 substitute
--- for the absent math.huge, and powers of two replace the absent math.ldexp.
+-- completeness, but no aura carries one. Powers of two replace the absent
+-- math.ldexp.
 local function readFloat(r)
 	local b1 = readByte(r)
 	local b2 = readByte(r)
@@ -211,8 +211,8 @@ local function readFloat(r)
 	local b7 = readByte(r)
 	local b8 = readByte(r)
 	local negative = b1 >= 128
-	local exponent = math.mod(b1, 128) * 16 + math.floor(b2 / 16)
-	local mantissa = math.mod(b2, 16) * 281474976710656
+	local exponent = math.fmod(b1, 128) * 16 + math.floor(b2 / 16)
+	local mantissa = math.fmod(b2, 16) * 281474976710656
 		+ b3 * 1099511627776
 		+ b4 * 4294967296
 		+ b5 * 16777216
@@ -225,7 +225,7 @@ local function readFloat(r)
 		return sign * (mantissa / 4503599627370496) * (2 ^ -1022)
 	end
 	if exponent == 2047 then
-		if mantissa == 0 then return sign * WA.INF end
+		if mantissa == 0 then return sign * math.huge end
 		return 0 / 0
 	end
 	return sign * (1 + mantissa / 4503599627370496) * (2 ^ (exponent - 1023))
@@ -315,12 +315,12 @@ function readValue(r, depth)
 	end
 	local tag = readByte(r)
 
-	if math.mod(tag, 2) == 1 then
+	if math.fmod(tag, 2) == 1 then
 		return math.floor(tag / 2)
 	end
 
-	if math.mod(tag, 4) == 2 then
-		local kind = math.mod(math.floor(tag / 4), 4)
+	if math.fmod(tag, 4) == 2 then
+		local kind = math.fmod(math.floor(tag / 4), 4)
 		local count = math.floor(tag / 16)
 		if kind == EMB_STRING then
 			local value = readRaw(r, count)
@@ -336,16 +336,16 @@ function readValue(r, depth)
 		-- represent zero and spends the bit on a larger range. Dropping either
 		-- +1 still decodes simple payloads for a while before drifting, which is
 		-- what makes it worth stating rather than deriving.
-		local arrayCount = math.mod(count, 4) + 1
+		local arrayCount = math.fmod(count, 4) + 1
 		local mapCount = math.floor(count / 4) + 1
 		local value = newTableReference(r)
 		fillArray(r, value, arrayCount, depth)
 		return fillMap(r, value, mapCount, depth)
 	end
 
-	if math.mod(tag, 8) == 4 then
+	if math.fmod(tag, 8) == 4 then
 		local value = math.floor(tag / 16) + readByte(r) * 16
-		if math.mod(math.floor(tag / 8), 2) == 1 then return -value end
+		if math.fmod(math.floor(tag / 8), 2) == 1 then return -value end
 		return value
 	end
 

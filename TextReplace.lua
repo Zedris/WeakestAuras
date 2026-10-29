@@ -22,7 +22,7 @@ local WA = WeakestAuras
 local function timeFmt(t)
 	if type(t) ~= "number" then return "" end
 	if t > 60 then
-		return string.format("%d:%02d", math.floor(t / 60), math.floor(math.mod(t, 60)))
+		return string.format("%d:%02d", math.floor(t / 60), math.floor(math.fmod(t, 60)))
 	elseif t > 0 then
 		return string.format("%.1f", t)
 	end
@@ -127,7 +127,7 @@ end
 -- nil when the triggers declare none, so the row is absent rather than empty.
 function WA.TextSymbolHint(data)
 	local names = WA.TextSymbols(data)
-	local n = table.getn(names)
+	local n = #names
 	if n == 0 then return nil end
 	local parts = {}
 	for i = 1, n do parts[i] = "%" .. names[i] end
@@ -275,7 +275,7 @@ local TIME_PRECISION_LABELS = { [1] = "12.3", [2] = "12.34", [3] = "12.345" }
 local TIME_RENDERERS = {
 	[0] = function(t)
 		if t >= 60 then
-			return string.format("%d:%02d", math.floor(t / 60), math.floor(math.mod(t, 60)))
+			return string.format("%d:%02d", math.floor(t / 60), math.floor(math.fmod(t, 60)))
 		end
 		return string.format("%d", math.floor(t))
 	end,
@@ -287,10 +287,10 @@ local TIME_RENDERERS = {
 	[2] = function(t)
 		if t >= 3600 then
 			return string.format("%dh %dm", math.floor(t / 3600),
-				math.floor(math.mod(t, 3600) / 60))
+				math.floor(math.fmod(t, 3600) / 60))
 		end
 		if t >= 60 then
-			return string.format("%dm %ds", math.floor(t / 60), math.floor(math.mod(t, 60)))
+			return string.format("%dm %ds", math.floor(t / 60), math.floor(math.fmod(t, 60)))
 		end
 		return string.format("%ds", math.floor(t))
 	end,
@@ -390,7 +390,7 @@ WA.format_types = {
 			end
 			local pad = padSummary(symbol, get)
 			if pad then table.insert(parts, pad) end
-			if table.getn(parts) == 0 then return "String" end
+			if #parts == 0 then return "String" end
 			return "String " .. table.concat(parts, ", ")
 		end,
 		options = function(symbol, get, set)
@@ -523,8 +523,8 @@ WA.format_types = {
 				if n == nil then return v end
 				n = math.floor(n)
 				local gold = math.floor(n / 10000)
-				local silver = math.floor(math.mod(math.floor(n / 100), 100))
-				local copper = math.floor(math.mod(n, 100))
+				local silver = math.floor(math.fmod(math.floor(n / 100), 100))
+				local copper = math.floor(math.fmod(n, 100))
 				if precision == 1 then
 					return separateNumber(gold) .. coin("gold")
 				elseif precision == 2 then
@@ -768,7 +768,7 @@ local RAID_CELL = 64
 -- the rows. A "4x2 grid" reads each row as 128px, which stacks two markers into
 -- every icon and samples empty sheet for 5..8.
 local function raidMarkerArt(n)
-	local left = math.mod(n - 1, 4) * RAID_CELL
+	local left = math.fmod(n - 1, 4) * RAID_CELL
 	local top = math.floor((n - 1) / 4) * RAID_CELL
 	return "|T" .. RAID_MARKER_SHEET .. ":0:0:0:0:"
 		.. RAID_SHEET_SIZE .. ":" .. RAID_SHEET_SIZE .. ":"
@@ -858,7 +858,7 @@ local function eachFormattableSymbol(text, fn)
 		end)
 	end
 	if type(text) == "table" then
-		for i = 1, table.getn(text) do scan(text[i]) end
+		for i = 1, #text do scan(text[i]) end
 	else
 		scan(text)
 	end
@@ -945,7 +945,7 @@ function WA.FormatOptionFields(text, get, set, data, keyPrefix)
 		local spec = WA.format_types[current]
 		if spec and spec.options then
 			local extra = spec.options(symbol, get, set)
-			for i = 1, table.getn(extra) do table.insert(fields, extra[i]) end
+			for i = 1, #extra do table.insert(fields, extra[i]) end
 		end
 	end)
 	return fields
@@ -967,7 +967,7 @@ function WA.FormatSummary(text, get, data)
 			table.insert(parts, "%" .. symbol .. " " .. desc)
 		end
 	end)
-	if table.getn(parts) == 0 then return nil end
+	if #parts == 0 then return nil end
 	return table.concat(parts, ", ")
 end
 
@@ -992,7 +992,7 @@ function WA.ContainsCustomPlaceHolder(text)
 		end)
 	end
 	if type(text) == "table" then
-		for i = 1, table.getn(text) do scan(text[i]) end
+		for i = 1, #text do scan(text[i]) end
 	else
 		scan(text)
 	end
@@ -1035,7 +1035,7 @@ function WA.RunCustomTextFunc(region, fn)
 		return dt[sym].func(dt[sym].get(state), state)
 	end
 	local ok, values = WA.RunAuraFuncPacked(region, (region.id or "?") .. ": custom text", fn,
-		expirationTime or WA.INF, duration or 0,
+		expirationTime or math.huge, duration or 0,
 		classic("p"), classic("t"), classic("n"), classic("i"), classic("s"))
 	if not ok then return nil end
 	return values

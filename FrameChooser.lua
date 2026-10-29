@@ -38,7 +38,7 @@ local function findRegionUnderMouse(focus)
 		WA.ForEachRegion(function(region)
 			local data = WeakestAurasDB.displays[region.id]
 			if data and region.IsVisible and region:IsVisible()
-				and MouseIsOver and MouseIsOver(region) then
+				and region:IsMouseOver() then
 				local isGroup = WA.IsGroup(data)
 				if not chosen or (chosenIsGroup and not isGroup) then
 					chosen = region
@@ -73,7 +73,7 @@ local function stopChooser(restore)
 	chooserFrame:SetScript("OnUpdate", nil)
 	chooserBox:Hide()
 	chooserFrame:Hide()
-	if ResetCursor then ResetCursor() end
+	ResetCursor()
 	chooserData, chooserApply, chooserOriginal = nil, nil, nil
 	chooserFocus, chooserFocusName = nil, nil
 end
@@ -91,15 +91,15 @@ function WA.StartFrameChooser(data, apply)
 	chooserOriginal = data.anchorFrameFrame
 	chooserFocus, chooserFocusName = nil, nil
 	chooserFrame:Show()
-	if SetCursor then SetCursor("Interface\\Cursor\\Point") end
+	SetCursor("Interface\\Cursor\\Point")
 	chooserFrame:SetScript("OnUpdate", function()
-		if IsMouseButtonDown and IsMouseButtonDown("RightButton") then
+		if IsMouseButtonDown("RightButton") then
 			stopChooser(true)
 			if WA.RefreshOptions then WA.RefreshOptions() end
 			return
 		end
 
-		local focus = GetMouseFocus and GetMouseFocus() or nil
+		local focus = GetMouseFocus()
 		local picked, pickedName = findRegionUnderMouse(focus)
 		if picked ~= chooserFocus then
 			chooserFocus = picked
@@ -117,7 +117,7 @@ function WA.StartFrameChooser(data, apply)
 		if chooserFocusName and chooserApply and chooserFocusName ~= chooserData.anchorFrameFrame then
 			chooserApply(chooserFocusName)
 		end
-		if IsMouseButtonDown and IsMouseButtonDown("LeftButton") and chooserFocusName then
+		if IsMouseButtonDown("LeftButton") and chooserFocusName then
 			stopChooser(false)
 			if WA.RefreshOptions then WA.RefreshOptions() end
 		end

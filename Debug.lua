@@ -1,8 +1,7 @@
 -- WeakestAuras -- in-game probes and verification commands for the runtime
--- engine. Registers /wa probe, soundprobe, states, libs, addons, gen, load,
+-- engine. Registers /wa probe, states, libs, addons, gen, load,
 -- conditions, codeprobe, textprobe, csprobe, texprobe, levelprobe, plateprobe,
--- wa2probe,
--- wa2, and cdtest.
+-- wa2probe, and wa2.
 
 if WeakestAuras.disabled then return end
 
@@ -83,7 +82,7 @@ end
 function D.Log(line)
 	ensureFrame()
 	table.insert(buffer, line)
-	if table.getn(buffer) > MAX_LOG_LINES then
+	if #buffer > MAX_LOG_LINES then
 		table.remove(buffer, 1)
 	end
 	refresh()
@@ -102,8 +101,9 @@ end
 
 -- ---------------------------------------------------------------------------
 -- /wa dump [unit] [filter] -- settles: exact AuraData field shapes, whether
--- `name` ever carries a "(Rank N)" suffix, and where the list actually
--- terminates (the buff-cap blind-spot question).
+-- `name` ever carries a "(Rank N)" suffix, where the list actually terminates
+-- (the buff-cap blind-spot question), and whether the positional values the
+-- aura scan reads line up with the table field for field on the running build.
 -- ---------------------------------------------------------------------------
 
 local function dumpOne(unit, filter)
@@ -123,6 +123,16 @@ local function dumpOne(unit, filter)
 				i, tostring(aura.name), tostring(aura.applications), tostring(aura.spellId), tostring(aura.dispelName),
 				tostring(aura.isHelpful), tostring(aura.isHarmful), tostring(aura.duration), tostring(aura.expirationTime),
 				remain, tostring(aura.sourceUnit), tostring(aura.sourceGUID)))
+			-- The same aura as positional values, which UnitAuraBySlot shares with
+			-- UnitAura: the scan runs on these, so they are read beside the table
+			-- rather than trusted to match it.
+			local pName, pIcon, pCount, pDispel, pDur, pExp, pSrc,
+				_, _, pSpellId, _, _, pCastByPlayer, _, pTimeMod = C_UnitAuras.UnitAura(unit, i, filter)
+			D.Log(string.format(
+				"      positional: 1=%s 3=%s 4=%s 5=%s 6=%s 7=%s 10=%s 13=%s 15=%s icon2=%s",
+				tostring(pName), tostring(pCount), tostring(pDispel), tostring(pDur),
+				tostring(pExp), tostring(pSrc), tostring(pSpellId),
+				tostring(pCastByPlayer), tostring(pTimeMod), tostring(pIcon == aura.icon)))
 		end
 	end
 	D.Log(string.format("--- end dump: %d aura(s), highest occupied slot=%d (scanned 1..%d) ---", found, highest, MAX_SLOT))
@@ -157,7 +167,7 @@ local watch = {
 
 local function snapshotUnit(unit)
 	local snap = {}
-	for f = 1, table.getn(WATCH_FILTERS) do
+	for f = 1, #WATCH_FILTERS do
 		local filter = WATCH_FILTERS[f]
 		for i = 1, MAX_SLOT do
 			local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, filter)
@@ -173,7 +183,7 @@ end
 local function diffAndLog(unit)
 	local old = watch.lastSnapshot[unit] or {}
 	local new = snapshotUnit(unit)
-	for f = 1, table.getn(WATCH_FILTERS) do
+	for f = 1, #WATCH_FILTERS do
 		local filter = WATCH_FILTERS[f]
 		for i = 1, MAX_SLOT do
 			local key = filter .. i
@@ -246,14 +256,14 @@ local function eventLogPayload()
 			table.insert(parts, "arg" .. i .. "=" .. tostring(vals[i]))
 		end
 	end
-	if table.getn(parts) == 0 then return "(no args)" end
+	if #parts == 0 then return "(no args)" end
 	return table.concat(parts, " ")
 end
 
 function D.ToggleEventLog(rest)
 	if eventLogActive then
 		eventLogActive = false
-		for i = 1, table.getn(eventLogNames) do
+		for i = 1, #eventLogNames do
 			eventLogFrame:UnregisterEvent(eventLogNames[i])
 		end
 		D.Log(string.format("[events] stopped (%d fire(s) logged this session)", eventLogCount))
@@ -261,10 +271,10 @@ function D.ToggleEventLog(rest)
 	end
 
 	local wanted = {}
-	for name in string.gfind(rest or "", "%S+") do
+	for name in string.gmatch(rest or "", "%S+") do
 		table.insert(wanted, string.upper(name))
 	end
-	if table.getn(wanted) == 0 then wanted = { "UNIT_AURA" } end
+	if #wanted == 0 then wanted = { "UNIT_AURA" } end
 
 	if not eventLogFrame then
 		eventLogFrame = CreateFrame("Frame")
@@ -276,7 +286,7 @@ function D.ToggleEventLog(rest)
 	end
 
 	eventLogNames = {}
-	for i = 1, table.getn(wanted) do
+	for i = 1, #wanted do
 		local name = wanted[i]
 		-- RegisterEvent throws on a name this client doesn't know, which is
 		-- itself the answer when the question is whether the event exists here.
@@ -287,350 +297,11 @@ function D.ToggleEventLog(rest)
 		end
 	end
 	eventLogActive = true
-	if table.getn(eventLogNames) == 0 then
+	if #eventLogNames == 0 then
 		D.Log("[events] started, but nothing registered")
 	else
 		D.Log("[events] started on: " .. table.concat(eventLogNames, ", "))
 	end
-end
-
--- ---------------------------------------------------------------------------
--- /wa auraprobe [unit|all] -- Nampower's aura-cast events, decoded against the
--- watched unit's harmful descriptor. The question is whether a debuff the
--- descriptor never transmits (only 16 harmful slots exist, and a raid boss
--- carries more) is still knowable: whether AURA_CAST_ON_OTHER carries *other*
--- players' casts and not only ours, whether arg9's debuff-bar-full bit sets,
--- whether arg8 is a real talented duration, and whether an aura it reports is
--- one /wa dump cannot see.
---
--- Arg order is taken from two working consumers on this client,
--- ../SuperCleveRoidMacros/NampowerAPI.lua and ../pfUI/libs/libdebuff.lua:
---   arg1 spellId  arg2 casterGuid  arg3 targetGuid  arg4 effect
---   arg5 effectAuraName (a numeric aura type, whatever the name suggests)
---   arg6 effectAmplitude (a periodic effect's tick period, ms)
---   arg7 effectMiscValue  arg8 durationMs
---   arg9 auraCapStatus (bit 1 buff bar full, bit 2 debuff bar full)
--- The SELF/OTHER split is by *target*, not by caster.
--- ---------------------------------------------------------------------------
-
-local AURA_CAST_EVENTS = { "AURA_CAST_ON_SELF", "AURA_CAST_ON_OTHER" }
-local AURA_CAST_CVAR = "NP_EnableAuraCastEvents"
-local AURA_CAST_MIN = "2.20.0"
-local AURA_CAST_DEDUPE = 0.1 -- pfUI's window: one event fires per spell *effect*
-local AURA_CAST_SETTLE = 2   -- the cast event precedes the descriptor update
-local HARMFUL_SLOTS = 16     -- descriptor slots 32..47; see design/client/gotchas.md
-
-local auraProbe = { registered = {}, session = 0, stats = {} }
-
-local function auraProbeReset()
-	auraProbe.n = 0
-	auraProbe.last = {}
-	auraProbe.pending = 0
-	auraProbe.stats = {
-		seen = 0, elsewhere = 0, onSelf = 0, onOther = 0,
-		byPlayer = 0, byOther = 0, dupes = 0,
-		capDebuff = 0, capBuff = 0, capNil = 0, zeroDur = 0,
-		hit = 0, miss = 0, overflow = 0,
-	}
-end
-
--- GUIDs arrive as strings from two different sources here (Nampower's event and
--- the client's UnitGUID), so they are compared case-insensitively rather than
--- assumed to agree on hex case.
-local function sameGuid(a, b)
-	if not a or not b then return false end
-	return string.lower(tostring(a)) == string.lower(tostring(b))
-end
-
-local function shortGuid(guid)
-	local s = tostring(guid)
-	if string.len(s) > 6 then return "~" .. string.sub(s, -6) end
-	return s
-end
-
--- nil when the token is not addressable at all, which a raw GUID used as a unit
--- token may well not be -- that is one of the things being probed.
-local function harmfulScan(unit, wantSpellId)
-	local count, highest, slot = 0, 0, nil
-	local ok = pcall(function()
-		for i = 1, MAX_SLOT do
-			local aura = C_UnitAuras.GetAuraDataByIndex(unit, i, "HARMFUL")
-			if aura then
-				count = count + 1
-				highest = i
-				if wantSpellId and not slot and aura.spellId == wantSpellId then slot = i end
-			end
-		end
-	end)
-	if not ok then return nil end
-	return count, highest, slot
-end
-
-local function capBits(status)
-	local n = tonumber(status)
-	if not n then return nil end
-	return math.mod(n, 2) == 1, math.mod(math.floor(n / 2), 2) == 1
-end
-
--- The descriptor lags the cast event, so the read that settles "did this one get
--- a slot?" is the one taken a couple of seconds later.
-local function auraProbeCheckLater(unit, guid, spellId, name)
-	local session = auraProbe.session
-	auraProbe.pending = auraProbe.pending + 1
-	C_Timer.After(AURA_CAST_SETTLE, function()
-		if auraProbe.session ~= session then return end
-		auraProbe.pending = auraProbe.pending - 1
-		local label = string.format("[auraprobe]   +%ds %s(%s):", AURA_CAST_SETTLE, tostring(name), tostring(spellId))
-		if not sameGuid(UnitGUID and UnitGUID(unit), guid) then
-			D.Log(label .. " " .. unit .. " is a different unit now, cross-check skipped")
-			return
-		end
-		local count, _, slot = harmfulScan(unit, spellId)
-		if not count then
-			D.Log(label .. " " .. unit .. " is no longer readable, cross-check skipped")
-		elseif slot then
-			auraProbe.stats.hit = auraProbe.stats.hit + 1
-			D.Log(string.format("%s descriptor HIT slot %d (harm=%d)", label, slot, count))
-		else
-			auraProbe.stats.miss = auraProbe.stats.miss + 1
-			if count >= HARMFUL_SLOTS then
-				auraProbe.stats.overflow = auraProbe.stats.overflow + 1
-				D.Log(string.format("%s descriptor MISS at harm=%d -- OVERFLOW, /wa dump cannot see this one", label, count))
-			else
-				D.Log(string.format("%s descriptor MISS at harm=%d -- not full, so it expired, was resisted, or never applied", label, count))
-			end
-		end
-	end)
-end
-
-local function auraProbeEvent()
-	local spellId, casterGuid, targetGuid = arg1, arg2, arg3
-	local effect, auraName, amplitude, misc = arg4, arg5, arg6, arg7
-	local durationMs, capStatus = arg8, arg9
-	local st = auraProbe.stats
-	st.seen = st.seen + 1
-
-	if auraProbe.unit and not sameGuid(targetGuid, UnitGUID and UnitGUID(auraProbe.unit)) then
-		st.elsewhere = st.elsewhere + 1
-		return
-	end
-
-	if event == "AURA_CAST_ON_SELF" then st.onSelf = st.onSelf + 1 else st.onOther = st.onOther + 1 end
-
-	local now = GetTime()
-	local key = tostring(targetGuid) .. "|" .. tostring(spellId) .. "|" .. tostring(casterGuid)
-	local prev = auraProbe.last[key]
-	local dup = prev and (now - prev) < AURA_CAST_DEDUPE
-	auraProbe.last[key] = now
-	if dup then st.dupes = st.dupes + 1 end
-
-	local mine = sameGuid(casterGuid, auraProbe.playerGuid)
-	if mine then st.byPlayer = st.byPlayer + 1 else st.byOther = st.byOther + 1 end
-	local casterLabel = "you"
-	if not mine then
-		casterLabel = "OTHER " .. shortGuid(casterGuid)
-		-- SuperWoW makes a GUID a unit token, but whether an arbitrary caster
-		-- resolves through one is part of what this probe answers.
-		local ok, nm = pcall(UnitName, casterGuid)
-		if ok and nm then casterLabel = casterLabel .. " " .. nm end
-	end
-
-	local buffFull, debuffFull = capBits(capStatus)
-	if capStatus == nil then st.capNil = st.capNil + 1 end
-	if debuffFull then st.capDebuff = st.capDebuff + 1 end
-	if buffFull then st.capBuff = st.capBuff + 1 end
-	local capText = tostring(capStatus)
-	if debuffFull then capText = capText .. "(debuff-full)" end
-	if buffFull then capText = capText .. "(buff-full)" end
-
-	local ms = tonumber(durationMs)
-	if not ms or ms == 0 then st.zeroDur = st.zeroDur + 1 end
-
-	local count, highest = harmfulScan(auraProbe.unit or targetGuid)
-	local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellId)
-
-	auraProbe.n = auraProbe.n + 1
-	D.Log(string.format(
-		"[auraprobe] #%d %s %s(%s) by %s -> %s harm=%s%s dur=%s cap=%s eff=%s aura=%s amp=%s misc=%s%s",
-		auraProbe.n,
-		event == "AURA_CAST_ON_SELF" and "SELF " or "OTHER",
-		tostring(name), tostring(spellId), casterLabel, shortGuid(targetGuid),
-		tostring(count), (count and count >= HARMFUL_SLOTS) and " FULL" or "",
-		ms and string.format("%.1fs", ms / 1000) or tostring(durationMs),
-		capText, tostring(effect), tostring(auraName), tostring(amplitude), tostring(misc),
-		dup and " DUP" or ""))
-	if highest and count and highest > count then
-		D.Log(string.format("[auraprobe]   ^ descriptor has a gap: %d aura(s) but highest slot %d", count, highest))
-	end
-
-	if auraProbe.unit and not dup then
-		auraProbeCheckLater(auraProbe.unit, targetGuid, spellId, name)
-	end
-end
-
-local function auraProbeStop()
-	auraProbe.active = false
-	for i = 1, table.getn(auraProbe.registered) do
-		auraProbe.frame:UnregisterEvent(auraProbe.registered[i])
-	end
-	auraProbe.registered = {}
-
-	local st = auraProbe.stats
-	local where = auraProbe.unit or "any unit"
-	D.Log("--- auraprobe summary ---")
-	D.Log(string.format("  %d event(s) fired, %d on another unit, %d logged on %s",
-		st.seen, st.elsewhere, auraProbe.n, where))
-	D.Log(string.format("  event split on %s: ON_SELF %d, ON_OTHER %d", where, st.onSelf, st.onOther))
-	D.Log(string.format("  caster split on %s: you %d, someone else %d   <- Q2, the load-bearing one",
-		where, st.byPlayer, st.byOther))
-	D.Log(string.format("  arg9: debuff-bar-full %d, buff-bar-full %d, nil %d   <- Q3",
-		st.capDebuff, st.capBuff, st.capNil))
-	D.Log(string.format("  arg8: %d carried a duration, %d were zero   <- Q4",
-		auraProbe.n - st.zeroDur, st.zeroDur))
-	D.Log(string.format("  descriptor at +%ds: %d hit, %d miss, %d of those missed while full   <- Q5",
-		AURA_CAST_SETTLE, st.hit, st.miss, st.overflow))
-	D.Log(string.format("  %d event(s) landed inside the %.1fs dedupe window (multi-effect spells)",
-		st.dupes, AURA_CAST_DEDUPE))
-	if auraProbe.pending > 0 then
-		D.Log(string.format("  %d cross-check(s) still pending; their lines follow this summary",
-			auraProbe.pending))
-	end
-	D.Log("--- end auraprobe ---")
-end
-
-function D.AuraProbe(rest)
-	if auraProbe.active then
-		auraProbeStop()
-		return
-	end
-
-	local _, _, word = string.find(string.lower(rest or ""), "^%s*(%S*)")
-	local unit = "target"
-	if word == "all" then unit = nil
-	elseif word ~= "" then unit = word end
-
-	auraProbe.session = auraProbe.session + 1
-	auraProbeReset()
-	auraProbe.unit = unit
-	auraProbe.playerGuid = (UnitGUID and UnitGUID("player")) or (GetPlayerGuid and GetPlayerGuid())
-
-	D.Log("--- auraprobe ---")
-
-	if not WA.hasNampower then
-		D.Log("  GetNampowerVersion absent -- no aura-cast events on this client")
-	else
-		local ok, major, minor, patch = pcall(GetNampowerVersion)
-		if not ok or not major then
-			D.Log("  GetNampowerVersion did not answer")
-		else
-			minor, patch = minor or 0, patch or 0
-			local have = WA.ParseVersion(major .. "." .. minor .. "." .. patch)
-			local need = WA.ParseVersion(AURA_CAST_MIN)
-			D.Log(string.format("  Nampower %s.%s.%s, aura-cast events need %s: %s   <- Q1",
-				tostring(major), tostring(minor), tostring(patch), AURA_CAST_MIN,
-				(have and have >= need) and "OK" or "TOO OLD"))
-		end
-	end
-
-	-- Nampower sends nothing at all with this CVar off, so the probe turns it on
-	-- rather than reporting an empty stream as a negative result.
-	if type(GetCVar) ~= "function" then
-		D.Log("  GetCVar absent -- cannot read " .. AURA_CAST_CVAR .. "   <- Q1")
-	else
-		local ok, value = pcall(GetCVar, AURA_CAST_CVAR)
-		D.Log(string.format("  %s = %s   <- Q1", AURA_CAST_CVAR, ok and tostring(value) or "unreadable"))
-		if ok and value ~= "1" and type(SetCVar) == "function" then
-			pcall(SetCVar, AURA_CAST_CVAR, "1")
-			local reread, after = pcall(GetCVar, AURA_CAST_CVAR)
-			D.Log("  set it to 1 -> reads back " .. (reread and tostring(after) or "unreadable"))
-		end
-	end
-
-	-- The overflow cache drops helpful auras on this classifier's word, so a
-	-- client whose ClassicAPI does not carry it caches more than it needs to.
-	if not (C_Spell and C_Spell.IsSpellHarmful) then
-		D.Log("  C_Spell.IsSpellHarmful absent -- helpful auras cannot be filtered out")
-	else
-		local okHarm, harmful = pcall(C_Spell.IsSpellHarmful, 9835)
-		local okHelp, helpful = pcall(C_Spell.IsSpellHarmful, 1126)
-		D.Log(string.format("  C_Spell.IsSpellHarmful: Moonfire(9835)=%s, Mark of the Wild(1126)=%s (want true, false)",
-			okHarm and tostring(harmful) or "errored", okHelp and tostring(helpful) or "errored"))
-	end
-
-	if not auraProbe.frame then
-		auraProbe.frame = CreateFrame("Frame")
-		auraProbe.frame:SetScript("OnEvent", function() WA.safecall("auraprobe", auraProbeEvent) end)
-	end
-	for i = 1, table.getn(AURA_CAST_EVENTS) do
-		local name = AURA_CAST_EVENTS[i]
-		-- RegisterEvent throws on an event this client does not know, which is
-		-- itself the answer when the question is whether it exists here.
-		if pcall(function() auraProbe.frame:RegisterEvent(name) end) then
-			table.insert(auraProbe.registered, name)
-		else
-			D.Log("  " .. name .. " -- refused by the client, no such event")
-		end
-	end
-	D.Log("  registered: " .. (table.getn(auraProbe.registered) > 0
-		and table.concat(auraProbe.registered, ", ") or "nothing"))
-
-	D.Log("  player GUID " .. tostring(auraProbe.playerGuid))
-	if unit then
-		local count, highest = harmfulScan(unit)
-		D.Log(string.format("  watching %s (guid %s): %s harmful aura(s) now, highest slot %s",
-			unit, tostring(UnitGUID and UnitGUID(unit)), tostring(count), tostring(highest)))
-	else
-		D.Log("  watching every target -- no descriptor cross-check without a unit token, and a raid is a firehose")
-	end
-	auraProbe.active = true
-	D.Log("  running -- /wa auraprobe again to stop and print the summary")
-end
-
--- ---------------------------------------------------------------------------
--- /wa overflow [unit] -- what the overflow cache holds for a unit, how long each
--- entry has left, and whether the trust gate currently lets any of it be used.
--- Runs the same reconcile a trigger would, so it evicts as it reports: the dump
--- is the state a scan would see, not the state before one.
--- ---------------------------------------------------------------------------
-
-function D.Overflow(rest)
-	local _, _, word = string.find(string.lower(rest or ""), "^%s*(%S*)")
-	local unit = (word ~= "" and word) or "target"
-	local AO = WA.AuraOverflow
-
-	D.Log("--- overflow " .. unit .. " ---")
-	if not (AO and AO.Enabled()) then
-		D.Log("  the cache is not running -- Nampower absent or below 2.20")
-		D.Log("--- end overflow ---")
-		return
-	end
-	D.Log("  global toggle: " .. (WA.Options().auraOverflow == false and "OFF" or "on"))
-
-	local guid = UnitGUID and UnitGUID(unit)
-	if not guid then
-		D.Log("  " .. unit .. " has no GUID")
-		D.Log("--- end overflow ---")
-		return
-	end
-
-	local gate, count = AO.Reconcile(unit, guid)
-	D.Log(string.format("  %s guid %s, harmful descriptor %s/%d -- trust gate %s",
-		unit, tostring(guid), tostring(count), HARMFUL_SLOTS, gate and "PASSES" or "fails"))
-
-	local now = GetTime()
-	local entries = AO.EntriesFor(guid) or {}
-	local n = table.getn(entries)
-	for i = 1, n do
-		local e = entries[i]
-		local remain = "unknown"
-		if e.duration > 0 then remain = string.format("%.1fs", (e.start + e.duration) - now) end
-		D.Log(string.format("  %s(%s) caster=%s remain=%s age=%.1fs capped=%s",
-			tostring(e.name), tostring(e.spellId), tostring(e.caster), remain,
-			now - e.start, tostring(AO.WasCapped(e))))
-	end
-	D.Log(string.format("  %d entry(ies)%s", n,
-		gate and "" or " -- none of them can be surfaced while the gate fails"))
-	D.Log("--- end overflow ---")
 end
 
 -- ---------------------------------------------------------------------------
@@ -650,7 +321,7 @@ function D.LinkProbe()
 		"ContainerFrameItemButton_OnClick", "PickupContainerItem",
 		"IsModifiedClick", "GetContainerItemLink",
 	}
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		D.Log("[link] " .. names[i] .. " = " .. type(getglobal(names[i])))
 	end
 	D.Log("[link] chat edit box visible = "
@@ -664,7 +335,7 @@ function D.LinkProbe()
 
 	-- Each wrapper logs and calls through, so nothing it touches changes
 	-- behaviour. Left installed for the session: these are cold paths.
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local name = names[i]
 		local orig = getglobal(name)
 		if type(orig) == "function" then
@@ -678,412 +349,85 @@ function D.LinkProbe()
 end
 
 -- ---------------------------------------------------------------------------
--- /wa timers -- what C_Timer offers a scheduler that has to retract a pending
--- callback. Two questions a type check cannot answer on its own: whether After
--- hands back any handle at all, and whether a Cancel that returns cleanly
--- actually suppresses the callback rather than just not erroring. Both are
--- settled behaviourally here, by scheduling one of each and reporting which
--- ones fired after the deadline has passed.
+-- /wa swipelog [seconds] -- settles: what is done to a live icon's cooldown
+-- swipe while it flickers. Every SetCooldown on ClassicAPI's frame blanks the
+-- sweep for a frame, and so may hiding or reparenting it, so the counts say
+-- which of those is reaching the frame and how often. Wraps the methods on
+-- every icon region live at the start, as plain fields shadowing the frame's
+-- own, and puts back exactly what was there when the window ends.
 -- ---------------------------------------------------------------------------
 
-function D.Timers()
-	if type(C_Timer) ~= "table" then
-		D.Log("[timers] C_Timer is " .. type(C_Timer) .. " -- nothing to probe")
+local SWIPE_LOG_METHODS = {
+	swipe = { "SetCooldown", "SetCooldownFromExpirationTime", "Clear", "SetPaused", "Pause",
+		"Hide", "Show", "SetFrameLevel", "SetParent" },
+	region = { "Hide", "Show", "SetParent", "SetFrameLevel" },
+}
+local SWIPE_LOG_DETAIL = 12
+local swipeLogActive = false
+
+function D.SwipeLog(rest)
+	if swipeLogActive then
+		D.Log("[swipelog] already running")
 		return
 	end
-	D.Log("[timers] After=" .. type(C_Timer.After)
-		.. " NewTimer=" .. type(C_Timer.NewTimer)
-		.. " NewTicker=" .. type(C_Timer.NewTicker))
-
-	local fired = {}
-	local function shape(label, h)
-		local s = "[timers] " .. label .. " returned " .. type(h)
-		if type(h) == "table" then s = s .. " (Cancel=" .. type(h.Cancel) .. ")" end
-		D.Log(s)
+	local seconds = tonumber(rest) or 10
+	local counts, wrapped, detailed = {}, {}, 0
+	local startedAt = GetTime()
+	local function wrap(obj, method, label)
+		local original = rawget(obj, method)
+		local through = obj[method]
+		table.insert(wrapped, { obj = obj, method = method, original = original })
+		obj[method] = function(self, ...)
+			counts[label] = (counts[label] or 0) + 1
+			if detailed < SWIPE_LOG_DETAIL and string.find(label, "Cooldown", 1, true) then
+				detailed = detailed + 1
+				local args = { ... }
+				D.Log(string.format("[swipelog] +%.3fs %s (%s, %s)", GetTime() - startedAt, label,
+					tostring(args[1]), tostring(args[2])))
+			end
+			return through(self, ...)
+		end
 	end
-
-	if type(C_Timer.After) ~= "function" then
-		D.Log("[timers] no After -- the rest of this probe cannot run")
-		return
-	end
-	shape("After", C_Timer.After(1, function() fired.after = true end))
-
-	local cancelled
-	if type(C_Timer.NewTimer) == "function" then
-		shape("NewTimer", C_Timer.NewTimer(1, function() fired.newtimer = true end))
-		cancelled = C_Timer.NewTimer(1, function() fired.cancelled = true end)
-	end
-
-	if type(cancelled) == "table" and type(cancelled.Cancel) == "function" then
-		local ok, err = pcall(function() cancelled:Cancel() end)
-		D.Log("[timers] Cancel() " .. (ok and "returned cleanly" or ("errored: " .. tostring(err))))
-	else
-		D.Log("[timers] no cancellable handle -- a generation counter on the owner is the fallback")
-	end
-
-	local t0 = GetTime()
-	C_Timer.After(2, function()
-		D.Log(string.format("[timers] +%.2fs elapsed -- After fired=%s NewTimer fired=%s cancelled fired=%s",
-			GetTime() - t0,
-			tostring(fired.after and true or false),
-			tostring(fired.newtimer and true or false),
-			tostring(fired.cancelled and true or false)))
-		D.Log("[timers] a cancelled timer reading true means Cancel does not suppress the callback")
+	local icons = 0
+	WA.ForEachRegion(function(region, id)
+		if region.swipe then
+			icons = icons + 1
+			local name = tostring(id) .. "/" .. tostring(region.cloneId or "")
+			for _, m in ipairs(SWIPE_LOG_METHODS.swipe) do wrap(region.swipe, m, name .. " swipe:" .. m) end
+			for _, m in ipairs(SWIPE_LOG_METHODS.region) do wrap(region, m, name .. " region:" .. m) end
+		end
 	end)
-	D.Log("[timers] scheduled -- results in ~2s. No follow-up line at all means After never fired.")
-end
-
--- ---------------------------------------------------------------------------
--- /wa cdtest -- settles: can we render a native cooldown swipe on this client?
--- CreateFrame("Cooldown", ...) throws "Unknown frame type" here, but in vanilla
--- the swipe is really a 3D Model, so the working constructor is a "Model" frame
--- inheriting CooldownFrameTemplate -- the technique CooldownTracker uses on this
--- exact client (../reference/CooldownTracker/CooldownTracker.lua:502). This
--- probes that path; if the spiral shows in-world, the Icon region can adopt it.
--- ---------------------------------------------------------------------------
-
-local cdTestFrame
-local cdTestFailed = false
-
--- Guarded with pcall so a client that lacks CooldownFrameTemplate/the Model type
--- re-logs the finding instead of erroring on every re-run.
-function D.CooldownTest()
-	if cdTestFailed then
-		D.Log("[cdtest] native cooldown swipe is not available on this client -- already confirmed, see previous log line.")
-		return
+	local percentage = CooldownFrame_SetDisplayAsPercentage
+	CooldownFrame_SetDisplayAsPercentage = function(cd, fraction)
+		counts["CooldownFrame_SetDisplayAsPercentage"] = (counts["CooldownFrame_SetDisplayAsPercentage"] or 0) + 1
+		return percentage(cd, fraction)
 	end
-
-	if not cdTestFrame then
-		cdTestFrame = CreateFrame("Frame", nil, UIParent)
-		cdTestFrame:SetWidth(48); cdTestFrame:SetHeight(48)
-		cdTestFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 150)
-
-		local icon = cdTestFrame:CreateTexture(nil, "ARTWORK")
-		icon:SetAllPoints(cdTestFrame)
-		icon:SetTexture("Interface\\Icons\\Spell_Nature_LightningShield")
-
-		local ok, cooldown = pcall(CreateFrame, "Model", nil, cdTestFrame, "CooldownFrameTemplate")
-		if not ok or not cooldown then
-			cdTestFailed = true
-			D.Log("[cdtest] CreateFrame(\"Model\", ..., \"CooldownFrameTemplate\") failed: " .. tostring(cooldown) ..
-				" -- no native cooldown swipe on this client; Icon region stays text-only.")
-			return
+	swipeLogActive = true
+	D.Log(string.format("[swipelog] watching %d icon region(s) for %ds -- let it flicker", icons, seconds))
+	C_Timer.After(seconds, function()
+		for i = #wrapped, 1, -1 do
+			local w = wrapped[i]
+			w.obj[w.method] = w.original
 		end
-		cdTestFrame.cooldown = cooldown
-		-- The Model swipe underfills and sits bottom-left at scale 1; CooldownTracker
-		-- fixes it with SetScale((1/32)*iconSize) + a two-corner anchor (its
-		-- CalculateCooldownScale, line 505-512). iconSize here is 48.
-		cooldown:SetAllPoints(cdTestFrame)
-		cooldown:SetScale(48 / 32)
-		cooldown:ClearAllPoints()
-		cooldown:SetPoint("TOPLEFT", cdTestFrame, "TOPLEFT")
-		cooldown:SetPoint("BOTTOMRIGHT", cdTestFrame, "BOTTOMRIGHT")
-		D.Log("[cdtest] CreateFrame(\"Model\", ..., \"CooldownFrameTemplate\") succeeded, scaled 48/32 -- watch for the swipe.")
-	end
-	cdTestFrame:Show()
-	cdTestFrame.cooldown:Show()
-	CooldownFrame_SetTimer(cdTestFrame.cooldown, GetTime(), 10, 1)
-	D.Log("[cdtest] armed a 10s swipe on a test icon at CENTER,0,150 -- watch it in-world (not in this window). If it sweeps, the Model swipe works here.")
-end
-
--- ---------------------------------------------------------------------------
--- /wa modeltest [arg] -- settles: can this client texture a creature model?
--- SetModel(path) loads geometry only; a creature's skin comes from
--- CreatureDisplayInfo, which is why a raw creature model renders untextured
--- white. If PlayerModel:SetCreature exists and takes something addressable --
--- a display id from the client's own DBCs, or a creature entry resolved
--- through the WDB cache -- an offline fileID -> id table could texture them.
--- With no arg the probe reports whether the method exists and shows a raw
--- SetModel murloc for comparison; with a number it calls SetCreature(n) on
--- the same frame. Murloc display ids in 1.12's CreatureDisplayInfo: 506,
--- 4132; Ragnaros: 8842. A creature *entry* id for murlocs: 46. Whichever
--- numbering textures the model is the numbering the table should ship.
--- ---------------------------------------------------------------------------
-
-local modelTestFrame
-
-function D.ModelTest(rest)
-	if not modelTestFrame then
-		local ok, model = pcall(CreateFrame, "PlayerModel", nil, UIParent)
-		if not ok or not model then
-			D.Log("[modeltest] CreateFrame(\"PlayerModel\") failed: " .. tostring(model))
-			return
+		CooldownFrame_SetDisplayAsPercentage = percentage
+		swipeLogActive = false
+		local labels = {}
+		for label in pairs(counts) do table.insert(labels, label) end
+		table.sort(labels)
+		D.Log(string.format("[swipelog] calls over %ds:", seconds))
+		for _, label in ipairs(labels) do
+			D.Log(string.format("  %-60s %5d  (%.1f/s)", label, counts[label], counts[label] / seconds))
 		end
-		modelTestFrame = model
-		model:SetWidth(150); model:SetHeight(150)
-		model:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
-	end
-	local model = modelTestFrame
-	model:Show()
-	local id = tonumber(rest)
-	if not id then
-		D.Log("[modeltest] SetCreature is " .. (model.SetCreature and "present" or "ABSENT")
-			.. ", SetModel raw murloc armed at CENTER,0,120 -- expect white. Now try /wa modeltest 506 (displayId?) and /wa modeltest 46 (creature entry?).")
-		pcall(model.SetModel, model, "Creature\\Murloc\\Murloc.mdx")
-		return
-	end
-	if not model.SetCreature then
-		D.Log("[modeltest] SetCreature is absent on this client; nothing to try with " .. id .. ".")
-		return
-	end
-	pcall(model.ClearModel, model)
-	local ok, err = pcall(model.SetCreature, model, id)
-	D.Log("[modeltest] SetCreature(" .. id .. ") " .. (ok and "did not error" or ("errored: " .. tostring(err)))
-		.. " -- if a textured creature shows at CENTER,0,120, this numbering works.")
+		if #labels == 0 then D.Log("  none -- nothing touched any swipe or its icon") end
+	end)
 end
 
 -- ---------------------------------------------------------------------------
--- /wa swipetest [sizes...] + /wa swipenudge <k> [yflat] -- fast, no-/reload
--- loop for tuning RegionPrototype.lua's SizeSwipe alignment constants.
--- swipetest spawns one real icon+swipe rig per size (default 16/32/64/128)
--- side by side so drift across sizes is visible in one screenshot; swipenudge
--- writes WA.regionPrototype.swipeNudgeK/swipeYFlat live and re-sizes every
--- active rig immediately, since SizeSwipe re-reads those fields on every call.
--- ---------------------------------------------------------------------------
-
-local swipeTestRigs = {}
-local swipeTestTicker
-local SWIPE_TEST_DURATION = 6
-
--- Re-arms every active rig on a fresh 6s cycle -- CooldownFrame_SetTimer
--- doesn't loop on its own, so this ticker (period == duration) restarts each
--- swipe right as the previous one finishes.
-local function swipeTestLoop()
-	for i = 1, table.getn(swipeTestRigs) do
-		local rig = swipeTestRigs[i]
-		WA.regionPrototype.ArmSwipe(rig.swipe, GetTime() + SWIPE_TEST_DURATION, SWIPE_TEST_DURATION)
-	end
-end
-
-function D.SwipeTest(sizesStr)
-	for i = table.getn(swipeTestRigs), 1, -1 do
-		swipeTestRigs[i]:Hide()
-		swipeTestRigs[i] = nil
-	end
-	if swipeTestTicker then swipeTestTicker:Cancel(); swipeTestTicker = nil end
-
-	if sizesStr == "0" then
-		D.Log("[swipetest] cleared")
-		return
-	end
-
-	-- Each entry is {w=, h=} -- a bare "64" means square (w=h=64), "64x32"
-	-- means non-square, for testing swipeStretchMode against a real W ~= H.
-	local sizes = {}
-	if sizesStr and sizesStr ~= "" then
-		local rest = sizesStr
-		while true do
-			local _, e, wStr, hStr = string.find(rest, "^%s*(%d+)x(%d+)")
-			if wStr then
-				table.insert(sizes, { w = tonumber(wStr), h = tonumber(hStr) })
-				rest = string.sub(rest, e + 1)
-			else
-				local _, e2, numStr = string.find(rest, "^%s*(%d+)")
-				if not numStr then break end
-				table.insert(sizes, { w = tonumber(numStr), h = tonumber(numStr) })
-				rest = string.sub(rest, e2 + 1)
-			end
-		end
-	end
-	if table.getn(sizes) == 0 then
-		sizes = { { w = 16, h = 16 }, { w = 32, h = 32 }, { w = 64, h = 64 }, { w = 128, h = 128 } }
-	end
-
-	-- Enrage (5229) instead of a hardcoded texture -- brighter icon, easier to
-	-- eyeball the swipe edge against than the dark LightningShield art.
-	local _, _, testIcon = GetSpellInfo(5229)
-	testIcon = testIcon or "Interface\\Icons\\Spell_Nature_LightningShield"
-
-	-- Edge-tracked, not "prev size + gap": a flat per-icon increment ignores
-	-- the NEXT icon's own half-width, so consecutive very-different sizes
-	-- (64 -> 128) would actually overlap instead of just looking cramped.
-	local gap = 30
-	local rightEdge = -300
-	for i = 1, table.getn(sizes) do
-		local w, h = sizes[i].w, sizes[i].h
-		local x = rightEdge + gap + w / 2
-		rightEdge = x + w / 2
-
-		local rig = CreateFrame("Frame", nil, UIParent)
-		rig:SetWidth(w); rig:SetHeight(h)
-		rig:SetPoint("CENTER", UIParent, "CENTER", x, 150)
-
-		local tex = rig:CreateTexture(nil, "ARTWORK")
-		tex:SetAllPoints(rig)
-		tex:SetTexture(testIcon)
-		tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-		rig.swipe = WA.regionPrototype.CreateSwipe(rig)
-		WA.regionPrototype.SizeSwipe(rig.swipe, w, h)
-		WA.regionPrototype.ArmSwipe(rig.swipe, GetTime() + SWIPE_TEST_DURATION, SWIPE_TEST_DURATION)
-		if rig.swipe then rig.swipe:Show() end
-
-		local label = rig:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-		label:SetPoint("TOP", rig, "BOTTOM", 0, -4)
-		label:SetText(w == h and (tostring(w) .. "px") or (tostring(w) .. "x" .. tostring(h)))
-
-		rig:Show()
-		table.insert(swipeTestRigs, rig)
-	end
-	swipeTestTicker = C_Timer.NewTicker(SWIPE_TEST_DURATION, swipeTestLoop)
-	D.Log("[swipetest] spawned " .. table.getn(swipeTestRigs) .. " rig(s) at CENTER,*,150, looping every " ..
-		SWIPE_TEST_DURATION .. "s -- /wa swipenudge <k> [yflat] to tune live, /wa swipetest (no args) to respawn defaults, /wa swipetest 0 to clear")
-end
-
-function D.SwipeNudge(rest)
-	local _, _, kStr, yStr = string.find(rest or "", "^(%S*)%s*(%S*)$")
-	local k = tonumber(kStr)
-	if not k then
-		D.Log(string.format("[swipenudge] current: swipeNudgeK=%s swipeYFlat=%s -- usage: /wa swipenudge <k> [yflat]",
-			tostring(WA.regionPrototype.swipeNudgeK), tostring(WA.regionPrototype.swipeYFlat)))
-		return
-	end
-	local y = tonumber(yStr)
-	WA.regionPrototype.swipeNudgeK = k
-	if y then WA.regionPrototype.swipeYFlat = y end
-	for i = 1, table.getn(swipeTestRigs) do
-		local rig = swipeTestRigs[i]
-		WA.regionPrototype.SizeSwipe(rig.swipe, rig:GetWidth(), rig:GetHeight())
-	end
-	D.Log(string.format("[swipenudge] swipeNudgeK=%s swipeYFlat=%s -- re-sized %d active rig(s)",
-		tostring(WA.regionPrototype.swipeNudgeK), tostring(WA.regionPrototype.swipeYFlat), table.getn(swipeTestRigs)))
-end
-
--- ---------------------------------------------------------------------------
--- /wa edgetest -- settles: which of the swipe's two draw flags, and which of
--- its setters, is responsible when a wedge goes missing. Six rigs on one row,
--- each naming the combination it carries: wedge alone, edge alone, both, both
--- with a recoloured wedge, a recoloured wedge with no edge, and a wedge whose
--- colour is set only at construction (the ordering that shipped before the
--- colour option existed). If the wedge survives everywhere but the last two
--- differ, the fault is the colour setter reaching an already-shaped wedge; if
--- it dies wherever an edge exists, it is the edge texture.
--- ---------------------------------------------------------------------------
-
-local edgeTestRigs = {}
-local edgeTestTicker
-local EDGE_TEST_DURATION = 6
-
-local function edgeTestLoop()
-	for i = 1, table.getn(edgeTestRigs) do
-		local rig = edgeTestRigs[i]
-		if rig.swipe then
-			rig.swipe:Arm(GetTime() + EDGE_TEST_DURATION, EDGE_TEST_DURATION, false)
-		end
-	end
-end
-
-function D.EdgeTest(rest)
-	for i = table.getn(edgeTestRigs), 1, -1 do
-		edgeTestRigs[i]:Hide()
-		edgeTestRigs[i] = nil
-	end
-	if edgeTestTicker then edgeTestTicker:Cancel(); edgeTestTicker = nil end
-	if rest == "0" then
-		D.Log("[edgetest] cleared")
-		return
-	end
-	if not WA.regionPrototype.SwipeSupportsLooks() then
-		D.Log("[edgetest] the Model backend draws neither flag -- nothing to compare")
-		return
-	end
-
-	-- swipe, edge, colour (nil = leave the constructor's), label
-	local cases = {
-		{ true, false, nil, "wedge" },
-		{ false, true, nil, "edge" },
-		{ true, true, nil, "both" },
-		{ true, true, { 0.1, 0.2, 0.9, 0.7 }, "both+col" },
-		{ true, false, { 0.1, 0.2, 0.9, 0.7 }, "col" },
-		{ true, false, "early", "col early" },
-	}
-
-	local _, _, testIcon = GetSpellInfo(5229)
-	testIcon = testIcon or "Interface\\Icons\\Spell_Nature_LightningShield"
-
-	local size, gap = 48, 24
-	for i = 1, table.getn(cases) do
-		local case = cases[i]
-		local rig = CreateFrame("Frame", nil, UIParent)
-		rig:SetWidth(size); rig:SetHeight(size)
-		rig:SetPoint("CENTER", UIParent, "CENTER",
-			(i - (table.getn(cases) + 1) / 2) * (size + gap), -60)
-
-		local tex = rig:CreateTexture(nil, "ARTWORK")
-		tex:SetAllPoints(rig)
-		tex:SetTexture(testIcon)
-		tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-		local swipe = WA.regionPrototype.CreateSwipe(rig)
-		rig.swipe = swipe
-		if swipe then
-			-- "early" is the pre-option ordering: colour before the wedge has
-			-- ever been shaped. Everything else colours a live wedge.
-			if case[3] == "early" then
-				swipe:SetSwipeColor(0.1, 0.2, 0.9, 0.7)
-			end
-			WA.regionPrototype.SizeSwipe(swipe, size, size)
-			swipe:SetSwipe(case[1])
-			swipe:SetEdge(case[2])
-			swipe:Arm(GetTime() + EDGE_TEST_DURATION, EDGE_TEST_DURATION, false)
-			if type(case[3]) == "table" then
-				swipe:SetSwipeColor(case[3][1], case[3][2], case[3][3], case[3][4])
-			end
-		end
-
-		local label = rig:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-		label:SetPoint("TOP", rig, "BOTTOM", 0, -4)
-		label:SetText(case[4])
-
-		rig:Show()
-		table.insert(edgeTestRigs, rig)
-	end
-	edgeTestTicker = C_Timer.NewTicker(EDGE_TEST_DURATION, edgeTestLoop)
-	D.Log("[edgetest] six rigs at CENTER,*,-60 looping every " .. EDGE_TEST_DURATION ..
-		"s. /wa edgetest 0 to clear")
-	D.EdgeState()
-end
-
--- What each rig's wedges actually are, rather than what they look like: a
--- wedge that is shown, at a plausible angle pair, and carrying a corner offset
--- is one the addon built correctly and the client did not draw, which is a
--- different fault from any of the ones this addon can cause.
-function D.EdgeState()
-	if table.getn(edgeTestRigs) == 0 then
-		D.Log("[edgetest] no rigs -- /wa edgetest first")
-		return
-	end
-	for i = 1, table.getn(edgeTestRigs) do
-		local rig = edgeTestRigs[i]
-		local swipe = rig.swipe
-		if not swipe or not swipe.spinner then
-			D.Log(string.format("[edgetest] %d: no spinner-backed swipe", i))
-		else
-			local sp = swipe.spinner
-			local t1 = sp.textures[1]
-			local vx, vy = t1:GetVertexOffset(1)
-			local shown = 0
-			for k = 1, 3 do if sp.textures[k]:IsShown() then shown = shown + 1 end end
-			D.Log(string.format(
-				"[edgetest] %d: frame=%s wedgeFlag=%s spinnerVis=%s texShown=%d " ..
-				"angles=%s..%s ULoff=%.1f,%.1f fill=%s edge=%s",
-				i, tostring(swipe:IsShown()), tostring(swipe.wedgesEnabled),
-				tostring(sp.visible), shown,
-				tostring(sp.angle1 and math.floor(sp.angle1)),
-				tostring(sp.angle2 and math.floor(sp.angle2)),
-				vx or 0, vy or 0, tostring(t1:GetTexture()),
-				swipe.edge and tostring(swipe.edge:IsShown()) or "none"))
-		end
-	end
-end
-
--- ---------------------------------------------------------------------------
--- /wa swipestress [N] -- settles: what does an animating spinner swipe cost,
--- in frame time, at realistic icon counts? Each one redraws three wedges every
--- frame (4 SetVertexOffset + 1 SetTexCoord apiece, every offset re-entering
--- ClassicAPI's ApplyFromRect), where the Model fallback spends no Lua at all
--- per frame. With no argument it sweeps 0/10/40/100 rigs and prints the
--- marginal cost per icon; with N it measures one count and leaves the rigs up.
+-- /wa swipestress [N] -- settles: what does an animating cooldown swipe cost,
+-- in frame time, at realistic icon counts? The swipe is ClassicAPI's native
+-- Cooldown frame, so this is the engine's draw cost alone. With no argument it
+-- sweeps 0/10/40/100 rigs and prints the marginal cost per icon; with N it
+-- measures one count and leaves the rigs up.
 --
 -- Frames are counted from an OnUpdate over a wall-clock window rather than
 -- read from GetFramerate, which is smoothed over an unspecified span and so
@@ -1091,7 +435,7 @@ end
 -- including the baseline, so it cancels out of the difference.
 --
 -- The rigs arm a 600s countdown: barely any of it elapses during a sweep, so
--- every wedge stays a >270-degree span, which is the three-texture worst case.
+-- every sweep stays a >270-degree span, the most geometry it draws.
 -- ---------------------------------------------------------------------------
 
 local SWIPE_STRESS_SIZE = 24
@@ -1111,7 +455,7 @@ end
 local function swipeStressRig(index)
 	if swipeStressRigs[index] then return swipeStressRigs[index] end
 
-	local col = math.mod(index - 1, SWIPE_STRESS_COLS)
+	local col = math.fmod(index - 1, SWIPE_STRESS_COLS)
 	local row = math.floor((index - 1) / SWIPE_STRESS_COLS)
 	local pitch = SWIPE_STRESS_SIZE + 2
 
@@ -1127,25 +471,22 @@ local function swipeStressRig(index)
 	tex:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
 	rig.swipe = WA.regionPrototype.CreateSwipe(rig)
-	WA.regionPrototype.SizeSwipe(rig.swipe, SWIPE_STRESS_SIZE, SWIPE_STRESS_SIZE)
 
 	swipeStressRigs[index] = rig
 	return rig
 end
 
 local function swipeStressShow(count)
-	local existing = table.getn(swipeStressRigs)
+	local existing = #swipeStressRigs
 	local total = count > existing and count or existing
 	for i = 1, total do
 		if i <= count then
 			local rig = swipeStressRig(i)
-			if rig.swipe then
-				rig.swipe:Arm(GetTime() + SWIPE_STRESS_ARM, SWIPE_STRESS_ARM)
-			end
+			rig.swipe:SetCooldownDuration(SWIPE_STRESS_ARM)
 			rig:Show()
 		else
 			local rig = swipeStressRigs[i]
-			if rig.swipe then rig.swipe:Clear() end
+			rig.swipe:Clear()
 			rig:Hide()
 		end
 	end
@@ -1191,7 +532,7 @@ function swipeStressReport()
 	swipeStressRun = nil
 	local base = run.ms[0]
 	if not base then return end
-	for i = 1, table.getn(run.counts) do
+	for i = 1, #run.counts do
 		local count = run.counts[i]
 		local ms = run.ms[count]
 		if count > 0 and ms then
@@ -1222,9 +563,8 @@ function D.SwipeStress(rest)
 
 	local counts = count and { count } or { 0, 10, 40, 100 }
 	swipeStressRun = { counts = counts, index = 0, frames = 0, ms = {} }
-	D.Log(string.format("[swipestress] %s backend, measuring %d phase(s), %.0fs each -- hold still and don't move the camera",
-		(WA.hasTextureTransforms and WA.Spinner) and "spinner" or "Model",
-		table.getn(counts), SWIPE_STRESS_SETTLE + SWIPE_STRESS_WINDOW))
+	D.Log(string.format("[swipestress] measuring %d phase(s), %.0fs each -- hold still and don't move the camera",
+		#counts, SWIPE_STRESS_SETTLE + SWIPE_STRESS_WINDOW))
 	swipeStressPhase()
 end
 
@@ -1289,7 +629,7 @@ local STATE_FIELDS = {
 
 local function dumpState(triggernum, cloneId, state)
 	local parts = {}
-	for i = 1, table.getn(STATE_FIELDS) do
+	for i = 1, #STATE_FIELDS do
 		local f = STATE_FIELDS[i]
 		if state[f] ~= nil then
 			local v = state[f]
@@ -1348,15 +688,15 @@ function D.Conditions(id)
 	local conds = data.conditions or {}
 	local entry, act, pending
 	if WA.GetConditionDebug then entry, act, pending = WA.GetConditionDebug(data.uid) end
-	D.Log(string.format("--- conditions %q: %d condition(s) ---", id, table.getn(conds)))
+	D.Log(string.format("--- conditions %q: %d condition(s) ---", id, #conds))
 	-- A Custom Check's `value` is a whole function body and its `op` an event
 	-- list, so the generic line below says nothing useful about either. Whether
 	-- the source compiled is the question this dump exists to answer for it.
 	local function dumpCheck(prefix, chk)
 		if chk.trigger == -2 then
 			D.Log(string.format("%scheck: %s of %d", prefix, tostring(chk.variable),
-				table.getn(chk.checks or {})))
-			for k = 1, table.getn(chk.checks or {}) do
+				#(chk.checks or {})))
+			for k = 1, #(chk.checks or {}) do
 				dumpCheck(prefix .. "  ", chk.checks[k])
 			end
 			return
@@ -1373,11 +713,11 @@ function D.Conditions(id)
 		D.Log(string.format("%scheck: trigger=%s var=%s op=%s value=%s",
 			prefix, tostring(chk.trigger), tostring(chk.variable), tostring(chk.op), tostring(chk.value)))
 	end
-	for i = 1, table.getn(conds) do
+	for i = 1, #conds do
 		local c = conds[i]
 		dumpCheck(string.format("  [%d] ", i), c.check or {})
 		local changes = c.changes or {}
-		for j = 1, table.getn(changes) do
+		for j = 1, #changes do
 			D.Log(string.format("       change: %s = %s", tostring(changes[j].property), tostring(changes[j].value)))
 		end
 	end
@@ -1385,11 +725,11 @@ function D.Conditions(id)
 		if act then
 			for cloneId, flags in pairs(act) do
 				local parts = {}
-				for i = 1, table.getn(conds) do table.insert(parts, tostring(flags[i] and 1 or 0)) end
+				for i = 1, #conds do table.insert(parts, tostring(flags[i] and 1 or 0)) end
 				D.Log(string.format("  active[%q] = [%s]", cloneId, table.concat(parts, ",")))
 			end
 		end
-		if pending and table.getn(pending) > 0 then
+		if pending and #pending > 0 then
 			D.Log("  pending recheck for clone(s): " .. table.concat(pending, ", "))
 		else
 			D.Log("  no pending timer recheck")
@@ -1459,7 +799,7 @@ function D.Load(id)
 	if L.never then D.Log("  never = true (force-disabled)") end
 	local proto = WA.loadPrototype or {}
 	local anyConstraint = L.never
-	for i = 1, table.getn(proto) do
+	for i = 1, #proto do
 		local arg = proto[i]
 		-- Branched, not `and`/`or`-ed -- see WA.EvalLoad's own gate.
 		local active
@@ -1475,11 +815,11 @@ function D.Load(id)
 					D.Log("  class = " .. tostring(L.class) .. " (single)")
 				else
 					local picked = {}
-					for ci = 1, table.getn(WA.CLASS_TOKENS) do
+					for ci = 1, #WA.CLASS_TOKENS do
 						local token = WA.CLASS_TOKENS[ci]
 						if L.classes and L.classes[token] then table.insert(picked, token) end
 					end
-					D.Log("  class = " .. (table.getn(picked) > 0 and table.concat(picked, ",") or "(none picked)") .. " (multi)")
+					D.Log("  class = " .. (#picked > 0 and table.concat(picked, ",") or "(none picked)") .. " (multi)")
 				end
 			else
 				local opKey = arg.name .. "_operator"
@@ -1529,12 +869,12 @@ function D.Regions()
 		if not live[regionType] then table.insert(names, regionType) end
 	end
 	table.sort(names)
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local regionType = names[i]
 		D.Log(string.format("  %-15s live=%d pooled=%d", regionType,
 			live[regionType] or 0, pooled[regionType] or 0))
 	end
-	if table.getn(names) == 0 then D.Log("  (no regions built yet)") end
+	if #names == 0 then D.Log("  (no regions built yet)") end
 end
 
 function D.Rows()
@@ -1611,7 +951,7 @@ function D.ConfigTest()
 	if WA.RefreshList then WA.RefreshList() end
 	D.Log("--- configtest ---")
 	D.Log("  created \"" .. tostring(data.id) .. "\" with "
-		.. table.getn(data.authorOptions) .. " custom options")
+		.. #data.authorOptions .. " custom options")
 	D.Log("  open the options window, pick it, and use the Custom tab")
 	return data
 end
@@ -1661,7 +1001,7 @@ function D.Libs()
 			table.insert(majors, entry)
 		end
 		table.sort(majors)
-		D.Log("  all LibStub majors: " .. (table.getn(majors) > 0 and table.concat(majors, ", ") or "(none)"))
+		D.Log("  all LibStub majors: " .. (#majors > 0 and table.concat(majors, ", ") or "(none)"))
 	end
 	-- The decisive line: the numbers above look the same whether this copy won
 	-- the version race or the dev flag forced it, since forcing it rewrites the
@@ -1693,7 +1033,7 @@ function D.Libs()
 	if D.probeResult then D.Log("  LibStub arbitration probe: " .. D.probeResult) end
 
 	local missing = W and W.libWidgetsMissing or {}
-	if table.getn(missing) == 0 then
+	if #missing == 0 then
 		D.Log("  every required function present")
 	else
 		D.Log("  MISSING: " .. table.concat(missing, ", "))
@@ -1706,19 +1046,18 @@ end
 -- Interface\AddOns is MPQ-resident -- which is how a library can be registered
 -- with no file for it anywhere on disk. Cheaper than opening the archives.
 function D.Addons()
-	D.Log("--- addons (" .. tostring(GetNumAddOns and GetNumAddOns() or "?") .. " enumerated) ---")
-	if not GetNumAddOns then D.Log("  GetNumAddOns unavailable"); return end
+	D.Log("--- addons (" .. GetNumAddOns() .. " enumerated) ---")
 	local line = {}
 	for i = 1, GetNumAddOns() do
 		local name = GetAddOnInfo(i)
-		local loaded = IsAddOnLoaded and IsAddOnLoaded(i)
+		local loaded = IsAddOnLoaded(i)
 		table.insert(line, (name or "?") .. (loaded and "" or "(not loaded)"))
-		if table.getn(line) == 6 then
+		if #line == 6 then
 			D.Log("  " .. table.concat(line, ", "))
 			line = {}
 		end
 	end
-	if table.getn(line) > 0 then D.Log("  " .. table.concat(line, ", ")) end
+	if #line > 0 then D.Log("  " .. table.concat(line, ", ")) end
 end
 
 -- Both spell-cooldown sources for one spell, side by side. The slot read is what
@@ -1740,7 +1079,7 @@ function D.CdProbe(rest)
 		D.Log("--- end cdprobe ---")
 		return
 	end
-	local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id)
+	local name = C_Spell.GetSpellName(id)
 	D.Log("  name = " .. tostring(name))
 
 	local slot = WA.SpellSlotByID(id)
@@ -1758,27 +1097,26 @@ function D.CdProbe(rest)
 		D.Log("  slot: none -- this spell is not in the player's book")
 	end
 
-	local info = C_Spell and C_Spell.GetSpellCooldown and C_Spell.GetSpellCooldown(id)
+	local info = C_Spell.GetSpellCooldown(id)
 	if info then
 		D.Log(string.format("  C_Spell.GetSpellCooldown(%d): start %s, duration %s",
 			id, tostring(info.startTime), tostring(info.duration)))
-		if (info.startTime or 0) < 0 then
-			D.Log("    ^ signed-wrapped tick (ClassicAPI reads it into an int; uptime is past")
-			D.Log("      2^31 ms). Repaired to " .. string.format("%.2f", WA.UnwrapTick(info.startTime)))
-		end
 	else
 		D.Log("  C_Spell.GetSpellCooldown(" .. id .. ") = nil")
 	end
-	D.Log(string.format("  GetTime() = %.2f (uptime %.1f days -- ticks wrap signed past 24.9)",
-		GetTime(), GetTime() / 86400))
+	D.Log(string.format("  GetTime() = %.2f", GetTime()))
 
 	-- Raw: the point of the dump is the window before the GCD filter, which the
 	-- next two lines then report the filter's verdict on.
 	local wStart, wDuration = WA.SpellCdInfo(id, true)
+	local base = WA.SpellBaseCooldown and WA.SpellBaseCooldown(id) or 0
 	D.Log("  watcher answers: start " .. tostring(wStart) .. ", duration " .. tostring(wDuration))
-	D.Log("  IsGcdCooldown(that duration) = " .. tostring(WA.IsGcdCooldown(wDuration)))
+	D.Log("  own cooldown in the spell record = " .. tostring(base)
+		.. "s (0 = none of its own, so any window on it is shared)")
+	local shared = WA.IsSharedCooldown and WA.IsSharedCooldown(wDuration, base)
+	D.Log("  IsSharedCooldown(that window) = " .. tostring(shared))
 	D.Log("  => a Cooldown Ready trigger reads "
-		.. (((wDuration or 0) <= 0 or WA.IsGcdCooldown(wDuration) or ((wStart or 0) + (wDuration or 0)) <= GetTime())
+		.. (((wDuration or 0) <= 0 or shared or ((wStart or 0) + (wDuration or 0)) <= GetTime())
 			and "READY" or "on cooldown"))
 
 	-- Every rank, since a name resolves to one specific rank's ID and only the
@@ -1814,7 +1152,7 @@ function D.Gcd()
 	WA.WatchGCD()
 	local g = WA.GcdDebug()
 	D.Log("  watching = " .. tostring(g.watching)
-		.. ", book tabs = " .. tostring(GetNumSpellTabs and GetNumSpellTabs()))
+		.. ", book tabs = " .. tostring(GetNumSpellTabs()))
 	if g.probeSlot then
 		local name, rank = GetSpellName(g.probeSlot, book)
 		local ok, start, duration = pcall(GetSpellCooldown, g.probeSlot, book)
@@ -1824,13 +1162,16 @@ function D.Gcd()
 		D.Log("  probe slot: none learned -- cast an instant that has no cooldown of its own, then run this again")
 	end
 	D.Log("  measured GCD length = " .. tostring(g.measured or "none yet (assuming 1.5)"))
+	local ranged = UnitRangedDamage and UnitRangedDamage("player")
+	D.Log("  ranged swing = " .. tostring(ranged or "no UnitRangedDamage")
+		.. " -- a shot locks every spell for this long, and a window of it is read as shared, not as a cooldown")
 	local start, duration = WA.GcdInfo()
 	if duration > 0 then
 		D.Log(string.format("  window: start %.2f, length %.2f, %.2f left", start, duration, (start + duration) - GetTime()))
 	else
 		D.Log("  window: closed")
 	end
-	local info = C_Spell and C_Spell.GetSpellCooldown and C_Spell.GetSpellCooldown(61304)
+	local info = C_Spell.GetSpellCooldown(61304)
 	D.Log("  C_Spell.GetSpellCooldown(61304) = " .. (info and (tostring(info.startTime) .. " + " .. tostring(info.duration)) or "nil (no Spell.dbc row)"))
 	local ok, err = pcall(GetSpellCooldown, 61304, book)
 	D.Log("  GetSpellCooldown(61304, bookType) = " .. (ok and "returned a value" or ("ERROR " .. tostring(err))))
@@ -1843,7 +1184,7 @@ function D.Probe()
 	if E then
 		local fns = { "SerializeCBOR", "DeserializeCBOR", "CompressString", "DecompressString", "EncodeBase64", "DecodeBase64" }
 		local parts = {}
-		for i = 1, table.getn(fns) do
+		for i = 1, #fns do
 			table.insert(parts, fns[i] .. "=" .. (E[fns[i]] and "yes" or "NO"))
 		end
 		D.Log("  C_EncodingUtil: " .. table.concat(parts, " "))
@@ -1870,27 +1211,6 @@ function D.Probe()
 		D.Log(string.format("  glow overlay pool: %d created, %d free (in-use = %d)", created, free, created - free))
 	end
 
-	-- Does our Model+CooldownFrameTemplate swipe (RegionPrototype.lua's
-	-- CreateSwipe) support a reverse/inverse fill direction, the way retail's
-	-- modern Cooldown widget does via SetReverse? Vanilla's cooldown model has
-		-- no documented equivalent or addon reference on this client --
-	-- pfUI, OmniCC, GearMenu -- references one), but this client is a patched
-	-- fork, so check empirically rather than assume.
-	do
-		local testSwipe = WA.regionPrototype and WA.regionPrototype.CreateSwipe(UIParent)
-		if not testSwipe then
-			D.Log("  swipe reverse: CreateSwipe returned nil, can't probe")
-		else
-			D.Log("  swipe SetReverse method: " .. (testSwipe.SetReverse and "PRESENT" or "absent"))
-			if testSwipe.SetReverse then
-				local ok, err = pcall(testSwipe.SetReverse, testSwipe, true)
-				D.Log("  swipe SetReverse(true) call: " .. (ok and "OK" or ("FAILED -- " .. tostring(err))))
-			end
-			testSwipe:Hide()
-			testSwipe:SetParent(nil)
-		end
-	end
-
 	if not probeFrame then
 		probeFrame = CreateFrame("Frame", nil, UIParent)
 		probeFrame:SetWidth(48); probeFrame:SetHeight(48)
@@ -1907,145 +1227,6 @@ function D.Probe()
 	probeFrame:Show()
 	D.Log("  border texture: spawned a red WHITE8X8-edged test icon at CENTER,0,150 -- if you see a red border in-world, the border subregion renders here.")
 	D.Log("--- end probe ---")
-end
-
--- ---------------------------------------------------------------------------
--- /wa soundprobe -- measures the sound, combat-text and speech entry points
--- used by the action system. The scheduled files are judged by ear in-game;
--- return values only describe whether the call reached the client cleanly.
--- ---------------------------------------------------------------------------
-
-local SOUND_PROBE_FILES = {
-	"Sound\\interface\\RaidWarning.wav",
-	"Sound\\interface\\levelup2.wav",
-	"Sound\\interface\\iQuestComplete.wav",
-	"Sound\\interface\\iTellMessage.wav",
-	"Sound\\Spells\\LevelUp.wav",
-	"Sound\\Spells\\ReputationLevelUp.wav",
-	"Sound\\Spells\\PVPThroughQueue.wav",
-	"Sound\\Spells\\ShaysBell.wav",
-	"Sound\\Doodad\\BellTollNightElf.wav",
-	"Sound\\Doodad\\BellTollAlliance.wav",
-	"Sound\\Doodad\\BellTollHorde.wav",
-	"Sound\\Doodad\\BellTollTribal.wav",
-	"Sound\\Doodad\\DwarfHorn.wav",
-	"Sound\\Doodad\\G_GongTroll01.wav",
-	"Sound\\Doodad\\LightHouseFogHorn.wav",
-	"Sound\\Doodad\\HornGoober.wav",
-	"Sound\\interface\\AuctionWindowOpen.wav",
-	"Sound\\Interface\\igQuestFailed.wav",
-}
-
-local soundProbeSession = 0
-
-local function soundProbeCall(path, label)
-	if type(PlaySoundFile) ~= "function" then
-		D.Log("  " .. label .. " " .. path .. " -- PlaySoundFile absent")
-		return
-	end
-	local ok, first, second, third = pcall(PlaySoundFile, path)
-	D.Log(string.format("  %s %s -- call=%s return1=%s return2=%s return3=%s",
-		label, path, tostring(ok and true or false), tostring(first), tostring(second), tostring(third)))
-end
-
-local function soundProbeSchedule(session, delay, path, label)
-	if type(C_Timer) ~= "table" or type(C_Timer.After) ~= "function" then
-		D.Log("  playback sequence unavailable: C_Timer.After absent")
-		return false
-	end
-	C_Timer.After(delay, function()
-		if soundProbeSession ~= session then return end
-		soundProbeCall(path, label)
-	end)
-	return true
-end
-
-function D.SoundProbe()
-	soundProbeSession = soundProbeSession + 1
-	local session = soundProbeSession
-	D.Log("--- soundprobe ---")
-
-	if type(PlaySoundFile) == "function" then
-		D.Log("  MPQ internal paths: scheduled 18 curated SoundEntries paths; judge playback by ear")
-	else
-		D.Log("  MPQ internal paths: PlaySoundFile absent")
-	end
-
-	local delay = 0
-	local scheduled = 0
-	for i = 1, table.getn(SOUND_PROBE_FILES) do
-		if soundProbeSchedule(session, delay, SOUND_PROBE_FILES[i], "[curated]") then
-			scheduled = scheduled + 1
-		end
-		delay = delay + 1
-	end
-
-	local extensionFiles = {
-		{ path = "Interface\\AddOns\\BigWigs\\Sounds\\bandage.wav", label = "[extension wav]" },
-		{ path = "Interface\\AddOns\\BigWigs\\Sounds\\1.ogg", label = "[extension ogg]" },
-		{ path = "Interface\\AddOns\\BigWigs\\Sounds\\Alarm.mp3", label = "[extension mp3]" },
-	}
-	for i = 1, table.getn(extensionFiles) do
-		local item = extensionFiles[i]
-		if soundProbeSchedule(session, delay, item.path, item.label) then
-			scheduled = scheduled + 1
-		end
-		delay = delay + 1
-	end
-	D.Log("  playback sequence: " .. scheduled .. " file(s) scheduled")
-
-	D.Log("  PlaySoundFile return probe: read the return values on the first [curated] line")
-
-	if type(PlaySound) == "function" then
-		local ok, err = pcall(PlaySound, "RaidWarning")
-		D.Log("  PlaySound(\"RaidWarning\"): " .. (ok and "call returned cleanly" or ("ERROR " .. tostring(err))))
-	else
-		D.Log("  PlaySound(\"RaidWarning\"): PlaySound absent")
-	end
-
-	if type(LoadAddOn) == "function" then
-		local ok, result, reason = pcall(LoadAddOn, "Blizzard_CombatText")
-		D.Log(string.format("  LoadAddOn(Blizzard_CombatText): call=%s return=%s reason=%s CombatText_AddMessage=%s COMBAT_TEXT_SCROLL_FUNCTION=%s",
-			tostring(ok and true or false), tostring(result), tostring(reason),
-			type(CombatText_AddMessage), type(COMBAT_TEXT_SCROLL_FUNCTION)))
-	else
-		D.Log("  LoadAddOn(Blizzard_CombatText): LoadAddOn absent")
-	end
-
-	if type(C_VoiceChat) == "table" and type(C_VoiceChat.GetTtsVoices) == "function" then
-		local ok, voices = pcall(C_VoiceChat.GetTtsVoices)
-		if ok and type(voices) == "table" then
-			D.Log("  C_VoiceChat.GetTtsVoices: " .. table.getn(voices) .. " voice(s)")
-			for i = 1, table.getn(voices) do
-				D.Log(string.format("    voice %d: id=%s name=%s", i, tostring(voices[i].voiceID), tostring(voices[i].name)))
-			end
-		else
-			D.Log("  C_VoiceChat.GetTtsVoices: " .. (ok and ("returned " .. type(voices)) or ("ERROR " .. tostring(voices))))
-		end
-	else
-		D.Log("  C_VoiceChat.GetTtsVoices: unavailable")
-	end
-
-	if UIErrorsFrame and type(UIErrorsFrame.AddMessage) == "function" then
-		local ok, err = pcall(function()
-			UIErrorsFrame:AddMessage("[soundprobe] UIErrorsFrame", 0.2, 1, 0.2)
-		end)
-		D.Log("  UIErrorsFrame:AddMessage(msg, r, g, b): " .. (ok and "call returned cleanly" or ("ERROR " .. tostring(err))))
-	else
-		D.Log("  UIErrorsFrame:AddMessage(msg, r, g, b): unavailable")
-	end
-
-	if DEFAULT_CHAT_FRAME and type(DEFAULT_CHAT_FRAME.AddMessage) == "function" then
-		local ok, err = pcall(function()
-			DEFAULT_CHAT_FRAME:AddMessage("[soundprobe] DEFAULT_CHAT_FRAME", 0.2, 0.8, 1)
-		end)
-		D.Log("  DEFAULT_CHAT_FRAME:AddMessage(msg, r, g, b): " .. (ok and "call returned cleanly" or ("ERROR " .. tostring(err))))
-	else
-		D.Log("  DEFAULT_CHAT_FRAME:AddMessage(msg, r, g, b): unavailable")
-	end
-
-	D.Log("  listen for the 18 curated MPQ files, then wav, ogg, and mp3 in that order")
-	D.Log("--- end soundprobe ---")
 end
 
 -- ---------------------------------------------------------------------------
@@ -2200,10 +1381,9 @@ local function plateProbeName(frame)
 end
 
 local function plateProbeCount()
-	if not (C_NamePlate and C_NamePlate.GetNamePlates) then return "n/a" end
 	local ok, plates = pcall(C_NamePlate.GetNamePlates)
 	if not ok or type(plates) ~= "table" then return "?" end
-	return tostring(table.getn(plates))
+	return tostring(#plates)
 end
 
 -- What a frame reports about being drawable at all, which is a different
@@ -2259,13 +1439,11 @@ local function plateProbeRegions(lines)
 end
 
 local function plateProbeSnapshot(reason)
-	local guid = UnitGUID and UnitGUID("target")
-	local byUnit = (C_NamePlate and C_NamePlate.GetNamePlateForUnit)
-		and C_NamePlate.GetNamePlateForUnit("target") or nil
-	local byGuid = (guid and C_NamePlate and C_NamePlate.GetNamePlateForGUID)
-		and C_NamePlate.GetNamePlateForGUID(guid) or nil
+	local guid = UnitGUID("target")
+	local byUnit = C_NamePlate.GetNamePlateForUnit("target")
+	local byGuid = guid and C_NamePlate.GetNamePlateForGUID(guid) or nil
 	local lines = { "  plates=" .. plateProbeCount()
-		.. "  target=" .. tostring(UnitName and UnitName("target"))
+		.. "  target=" .. tostring(UnitName("target"))
 		.. "  ForUnit=" .. plateProbeName(byUnit)
 		.. "  ForGUID=" .. plateProbeName(byGuid) }
 	plateProbeRegions(lines)
@@ -2275,7 +1453,7 @@ local function plateProbeSnapshot(reason)
 	if key == plateProbe.last then return end
 	plateProbe.last = key
 	D.Log("[plate] " .. reason)
-	for i = 1, table.getn(lines) do D.Log(lines[i]) end
+	for i = 1, #lines do D.Log(lines[i]) end
 end
 
 local function plateProbeStop()
@@ -2290,13 +1468,6 @@ function D.PlateProbe()
 	if plateProbe.active then plateProbeStop(); return end
 
 	D.Log("--- plateprobe ---")
-	if not C_NamePlate then
-		D.Log("  C_NamePlate absent -- this client has no nameplate API at all")
-		return
-	end
-	D.Log("  GetNamePlates=" .. tostring(C_NamePlate.GetNamePlates ~= nil)
-		.. "  ForUnit=" .. tostring(C_NamePlate.GetNamePlateForUnit ~= nil)
-		.. "  ForGUID=" .. tostring(C_NamePlate.GetNamePlateForGUID ~= nil))
 	D.Log("  toggle nameplates on and off with a target selected; /wa plateprobe again to stop")
 
 	if not plateProbeFrame then plateProbeFrame = CreateFrame("Frame") end
@@ -2409,7 +1580,7 @@ function D.LevelProbe()
 
 	local probes = { 0, 1, 10, 63, 64, 100, 127, 128, 200, 255, 256, 500, 1000, 10000, 65535 }
 	local ceiling
-	for i = 1, table.getn(probes) do
+	for i = 1, #probes do
 		local want = probes[i]
 		local ok = pcall(function() host:SetFrameLevel(want) end)
 		local got = host:GetFrameLevel()
@@ -2557,10 +1728,10 @@ function D.TexProbe()
 		-- update names its regression directly -- offset magnitude (rulers,
 		-- at two effective scales), rotation chirality (the bar), the wedge
 		-- geometry and its multi-texture split (the spinners), and the
-		-- assembled cooldown swipe at both aspect ratios. Solid fills, so the
+		-- native cooldown swipe at both aspect ratios. Solid fills, so the
 		-- drawn quads are read directly. The diagnostic series that
 		-- established the client's corner contract lives in git history.
-		if WA.Spinner and WA.hasTextureTransforms then
+		do
 			local UL_V = UPPER_LEFT_VERTEX or 1
 
 			local function solidBox(x, y, label)
@@ -2655,8 +1826,7 @@ function D.TexProbe()
 			texProbeFrame._arrowRot = barRot
 			texProbeLabel(texProbeFrame, "bar rot 30\n(right end UP = CCW ok)", "TOP", barBox, "BOTTOM", 0, -4)
 
-			-- The assembled swipe object at both aspect ratios (the wide one is
-			-- what the Model backend structurally could not cover). Held at a
+			-- The native cooldown swipe at both aspect ratios. Held at a
 			-- quarter elapsed: dark except the bright 12-to-3-o'clock wedge.
 			local function swipeCanary(x, y, w, h, label)
 				local box = texProbeBox(texProbeFrame, x, y)
@@ -2667,8 +1837,7 @@ function D.TexProbe()
 				icon:SetAllPoints(holder)
 				icon:SetTexture(TEXPROBE_COLOR_ART)
 				local swipe = WA.regionPrototype.CreateSwipe(holder)
-				WA.regionPrototype.SizeSwipe(swipe, w, h)
-				if swipe then swipe:Hold(0.75, false) end
+				CooldownFrame_SetDisplayAsPercentage(swipe, 0.25)
 				texProbeLabel(texProbeFrame, label, "TOP", box, "BOTTOM", 0, -4)
 			end
 			swipeCanary(18 + 110, -454, 96, 96, "swipe hold 75%\n(bright 12 to 3)")
@@ -2703,7 +1872,7 @@ function D.TexProbe()
 	D.Log("  SetRotation: " .. ((scratch.SetRotation and "PRESENT") or "ABSENT"))
 	D.Log("  SetDesaturated(true): " .. (p.desatOK and "call accepted" or "ABSENT/FAILED")
 		.. " (return " .. tostring(p.desatReturn) .. ") -- compare normal and desaturated samples")
-	if WA.hasTextureTransforms then
+	do
 		D.Log("  effective scale: " .. tostring(texProbeFrame:GetEffectiveScale()))
 		local function dumpCorners(name, tex)
 			if not (tex and tex.GetCorners) then
@@ -2727,8 +1896,6 @@ function D.TexProbe()
 		D.Log("  every canary box's label states its expected look; a wrong box names its regression")
 		D.Log("  rulers: which tick does the white quad's pulled corner reach (yellow 12, green 24, orange 48, red 96)?")
 		D.Log("  corner dumps read zeros on the call that creates the frame; run texprobe twice for numbers")
-	else
-		D.Log("  wedge fixtures skipped: texture transforms absent (SetVertexOffset/SetRotation)")
 	end
 	D.Log("  visual answers: rotate 30 degrees; margin behavior; whether ON changes the half-width box; whether art greys")
 	D.Log("--- end texprobe ---")
@@ -2856,10 +2023,8 @@ function D.TexCornerProbe()
 		fixtures.wedgeTC = cornerProbeBox(18 + 2 * COL, -174, "wedge 0-90 texcoords\n(no vertex offsets)")
 		cornerProbeWedge(fixtures.wedgeTC, false)
 
-		if WA.hasTextureTransforms then
-			fixtures.wedgeBoth = cornerProbeBox(18 + 3 * COL, -174, "wedge tc + offsets\n(two writers)")
-			cornerProbeWedge(fixtures.wedgeBoth, true)
-		end
+		fixtures.wedgeBoth = cornerProbeBox(18 + 3 * COL, -174, "wedge tc + offsets\n(two writers)")
+		cornerProbeWedge(fixtures.wedgeBoth, true)
 
 		texCornerFrame._fixtures = fixtures
 		texCornerFrame._order = {
@@ -3064,7 +2229,7 @@ function D.TextProbe()
 		{ name = "offs  <path>:14:14:0:0", text = "|T" .. TEXTPROBE_ICON .. ":14:14:0:0|t" },
 	}
 	local anyRendered = false
-	for i = 1, table.getn(forms) do
+	for i = 1, #forms do
 		scratch:SetText(forms[i].text)
 		local w = scratch:GetStringWidth() or 0
 		-- An icon occupies roughly one line; the literal path is 35+ characters,
@@ -3083,11 +2248,9 @@ function D.TextProbe()
 	D.Log("  ICON_LIST = " .. type(ICON_LIST) .. ", ICON_TAG_LIST = " .. type(ICON_TAG_LIST))
 
 	-- What the addon resolved at load, beside what the probe just measured. A
-	-- disagreement is the interesting outcome: the flag also carries a version
-	-- gate, and the kill switch can be thrown between load and this run.
-	D.Log(string.format("  WA.hasInlineText = %s, WA.hasStringHeight = %s, FontString:SetRotation = %s",
-		tostring(WA.hasInlineText), tostring(WA.hasStringHeight), type(scratch.SetRotation)))
-	D.Log("  FeatureGate('inlineText') = " .. tostring(WA.FeatureGate("inlineText"))
+	-- disagreement is the interesting outcome: the kill switch can be thrown
+	-- between load and this run.
+	D.Log("  WA.hasInlineText = " .. tostring(WA.hasInlineText)
 		.. ", ClassicAPI " .. tostring(WA.ClassicAPIVersionString()))
 
 	-- The Money format's coin art. A width measurement cannot answer this one:
@@ -3101,7 +2264,7 @@ function D.TextProbe()
 	D.Log("  coin sheet " .. TEXTPROBE_COIN_SHEET .. " -> "
 		.. (coinTex:GetTexture() and "RESOLVES" or "REFUSED -- no such file here"))
 	coinTex:SetTexture(nil)
-	for i = 1, table.getn(TEXTPROBE_COINS) do
+	for i = 1, #TEXTPROBE_COINS do
 		local coin = TEXTPROBE_COINS[i]
 		local esc = "|T" .. TEXTPROBE_COIN_SHEET .. ":0:0:0:0:" .. coin.cell .. "|t"
 		scratch:SetText(esc)
@@ -3158,7 +2321,7 @@ function D.TextProbe()
 	if not textProbeFrame.scaleRows then
 		textProbeFrame.scaleRows = {}
 		local scales = { 1, 0.75, 1.5 }
-		for i = 1, table.getn(scales) do
+		for i = 1, #scales do
 			local host = CreateFrame("Frame", nil, textProbeFrame)
 			host:SetWidth(120); host:SetHeight(20)
 			host:SetPoint("TOPLEFT", textProbeFrame, "TOPLEFT", 200, -6 - (i - 1) * 24)
@@ -3224,7 +2387,7 @@ function D.TextProbe()
 			{ label = "crop 4", tail = "16:16:0:0:64:64:4:60:4:60" },
 			{ label = "crop 8", tail = "16:16:0:0:64:64:8:56:8:56" },
 		}
-		for i = 1, table.getn(variants) do
+		for i = 1, #variants do
 			local fs = textProbeFrame:CreateFontString(nil, "OVERLAY")
 			fs:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
 			fs:SetJustifyH("LEFT")
@@ -3267,11 +2430,11 @@ function D.TextProbe()
 		{ name = "Friz Quadrata", path = "Fonts\\FRIZQT__.TTF" },
 		{ name = "Roboto Mono", path = "Interface\\AddOns\\WeakestAuras\\fonts\\RobotoMono.ttf" },
 	}
-	for i = 1, table.getn(sweepFonts) do
+	for i = 1, #sweepFonts do
 		local path = sweepFonts[i].path
 		local parts, ceiling, last = {}, SWEEP_SIZES[1], sweepWidth(path, SWEEP_SIZES[1])
 		table.insert(parts, string.format("%d=%.0f", SWEEP_SIZES[1], last))
-		for j = 2, table.getn(SWEEP_SIZES) do
+		for j = 2, #SWEEP_SIZES do
 			local size = SWEEP_SIZES[j]
 			local w = sweepWidth(path, size)
 			if w > last + 0.5 then ceiling = size end
@@ -3280,7 +2443,7 @@ function D.TextProbe()
 		end
 		D.Log("  [size] " .. sweepFonts[i].name .. ": " .. table.concat(parts, " "))
 		D.Log(string.format("  -> SetFont stops widening above %dpx%s", ceiling,
-			(ceiling >= SWEEP_SIZES[table.getn(SWEEP_SIZES)]) and " (no ceiling in range)" or ""))
+			(ceiling >= SWEEP_SIZES[#SWEEP_SIZES]) and " (no ceiling in range)" or ""))
 
 		scratch:SetFont(path, 48, "")
 		scratch:SetText("HHHHHH")
@@ -3318,14 +2481,14 @@ function D.TextProbe()
 	end
 	if not textProbeFrame.orderScratch then
 		textProbeFrame.orderScratch = {}
-		for i = 1, table.getn(HEIGHT_ORDERS) do
+		for i = 1, #HEIGHT_ORDERS do
 			local fs = textProbeFrame:CreateFontString(nil, "BACKGROUND")
 			fs:SetAlpha(0)
 			fs:SetPoint("TOPLEFT", textProbeFrame, "TOPLEFT", 8, 40)
 			textProbeFrame.orderScratch[i] = fs
 		end
 	end
-	for i = 1, table.getn(HEIGHT_ORDERS) do
+	for i = 1, #HEIGHT_ORDERS do
 		local order = HEIGHT_ORDERS[i]
 		local fs = textProbeFrame.orderScratch[i]
 		applyOrder(fs, order, "HHHHHH")
@@ -3419,7 +2582,7 @@ function D.TextProbe()
 	-- between text that got bigger and text that got stretched.
 	if not textProbeFrame.heightRows then
 		textProbeFrame.heightRows = {}
-		for i = 1, table.getn(HEIGHT_ORDERS) do
+		for i = 1, #HEIGHT_ORDERS do
 			local fs = textProbeFrame:CreateFontString(nil, "OVERLAY")
 			fs:SetJustifyH("LEFT")
 			fs:SetPoint("TOPLEFT", textProbeFrame, "TOPLEFT", 8, -300 - (i - 1) * 46)
@@ -3441,13 +2604,13 @@ function D.TextProbe()
 	-- The font list and the flag combinations, read back the way textCore does.
 	local core = WA.textCore
 	if core then
-		for i = 1, table.getn(core.FONTS) do
+		for i = 1, #core.FONTS do
 			local f = core.FONTS[i]
 			scratch:SetFont(f.path, 12, "")
 			D.Log("  font " .. f.name .. " -> " .. (scratch:GetFont() and "loads" or "REFUSED"))
 		end
 		scratch:SetFont("Fonts\\FRIZQT__.TTF", 12, "")
-		for i = 1, table.getn(core.FLAGS) do
+		for i = 1, #core.FLAGS do
 			local flags = core.FLAGS[i]
 			local applied = (flags == "None") and "" or flags
 			scratch:SetFont("Fonts\\FRIZQT__.TTF", 12, applied)
@@ -3481,7 +2644,7 @@ function D.TextProbe()
 	local function describe(counts)
 		local parts = {}
 		for kind, n in pairs(counts) do table.insert(parts, kind .. "x" .. n) end
-		if table.getn(parts) == 0 then return "no regions" end
+		if #parts == 0 then return "no regions" end
 		table.sort(parts)
 		return table.concat(parts, " ")
 	end
@@ -3585,12 +2748,12 @@ function D.ColorSelectProbe()
 		"SetColorValueThumbTexture", "GetColorValueThumbTexture",
 	}
 	local present, absent = {}, {}
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local n = names[i]
 		if type(cs[n]) == "function" then table.insert(present, n) else table.insert(absent, n) end
 	end
-	D.Log("  present: " .. (table.getn(present) > 0 and table.concat(present, ", ") or "(none)"))
-	D.Log("  ABSENT:  " .. (table.getn(absent) > 0 and table.concat(absent, ", ") or "(none)"))
+	D.Log("  present: " .. (#present > 0 and table.concat(present, ", ") or "(none)"))
+	D.Log("  ABSENT:  " .. (#absent > 0 and table.concat(absent, ", ") or "(none)"))
 
 	if not csProbeFrame then
 		csProbeFrame = CreateFrame("Frame", nil, UIParent)
@@ -3992,7 +3155,7 @@ local commSent, commOrder = {}, {}
 local function commBody(n)
 	local out, alen = {}, string.len(COMM_ALPHABET)
 	for i = 1, n do
-		local k = math.mod(i - 1, alen) + 1
+		local k = math.fmod(i - 1, alen) + 1
 		table.insert(out, string.sub(COMM_ALPHABET, k, k))
 	end
 	return table.concat(out)
@@ -4034,11 +3197,6 @@ local function commEnsureListener()
 	commFrame = CreateFrame("Frame")
 	commFrame:RegisterEvent("CHAT_MSG_ADDON")
 	commFrame:SetScript("OnEvent", commOnEvent)
-	-- Some servers drop addon traffic on prefixes nobody registered. Absent on
-	-- vanilla, so its absence is a result and not a failure.
-	if type(RegisterAddonMessagePrefix) == "function" then
-		pcall(RegisterAddonMessagePrefix, COMM_PREFIX)
-	end
 end
 
 -- ChatThrottleLib's v13/v14 global hook is `Hook_SendAddonMessage(prefix, text,
@@ -4071,7 +3229,7 @@ end
 
 local function commReport(header)
 	D.Log(header)
-	for i = 1, table.getn(commOrder) do
+	for i = 1, #commOrder do
 		local tag = commOrder[i]
 		local rec = commSent[tag]
 		local state
@@ -4114,7 +3272,7 @@ function D.CommProbe(rest)
 		"SendAddonMessage", "RegisterAddonMessagePrefix", "SetItemRef",
 		"ChatFrame_AddMessageEventFilter", "GetCurrentKeyBoardFocus",
 	}
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		D.Log("  [api] " .. names[i] .. " = " .. type(getglobal(names[i])))
 	end
 	D.Log("  [api] NUM_CHAT_WINDOWS = " .. tostring(NUM_CHAT_WINDOWS)
@@ -4159,8 +3317,8 @@ function D.CommProbe(rest)
 	commSend("R001", 60, "WHISPER", me, true)
 	if tail and tail ~= "" then commSend("R002", 60, "WHISPER", tail, true) end
 
-	local inGuild = IsInGuild and IsInGuild()
-	local inParty = GetNumPartyMembers and GetNumPartyMembers() > 0
+	local inGuild = IsInGuild()
+	local inParty = GetNumPartyMembers() > 0
 	commSend("G001", 60, "GUILD")
 	if inParty then
 		commSend("P001", 60, "PARTY")
@@ -4177,12 +3335,12 @@ function D.CommProbe(rest)
 	else ladderChan, ladderTarget, ladderRaw = "WHISPER", me, true end
 	D.Log("  [send] byte ladder rides " .. ladderChan)
 	local ladder = { 180, 200, 220, 240, 250 }
-	for i = 1, table.getn(ladder) do
+	for i = 1, #ladder do
 		local n = ladder[i]
 		commSend("L" .. n, n - 5, ladderChan, ladderTarget, ladderRaw)
 	end
 
-	D.Log("  [send] " .. table.getn(commOrder) .. " messages away; tally in 10s.")
+	D.Log("  [send] " .. #commOrder .. " messages away; tally in 10s.")
 	C_Timer.After(10, function()
 		commReport("  --- comm probe tally ---")
 		D.Log("  S001 dead but R001 alive = a hooked global ate the target, not the realm.")
@@ -4223,12 +3381,12 @@ function D.CommThrottle(rest)
 
 	C_Timer.After(secs + 6, function()
 		local arrived = 0
-		for i = 1, table.getn(commOrder) do
+		for i = 1, #commOrder do
 			if commSent[commOrder[i]].ok then arrived = arrived + 1 end
 		end
-		D.Log("  [throttle] " .. arrived .. " of " .. table.getn(commOrder)
+		D.Log("  [throttle] " .. arrived .. " of " .. #commOrder
 			.. " sent messages came back intact at " .. rate .. "/sec.")
-		if arrived < table.getn(commOrder) then
+		if arrived < #commOrder then
 			commReport("  --- which ones ---")
 		end
 		D.Log("--- end comm throttle ---")
@@ -4339,7 +3497,7 @@ function D.ToggleTsuTrace()
 			local ok, trace = pcall(debug.traceback, "", 2)
 			if ok and trace then
 				local n = 0
-				for line in string.gfind(trace, "[^\n]+") do
+				for line in string.gmatch(trace, "[^\n]+") do
 					n = n + 1
 					if n > 6 then break end
 					D.Log("        " .. line)
@@ -4378,8 +3536,8 @@ local threatProbe = { on = false, sent = {},
 
 local function threatChannel(want)
 	if want and want ~= "" then return string.upper(want) end
-	if GetNumRaidMembers and GetNumRaidMembers() > 0 then return "RAID" end
-	if GetNumPartyMembers and GetNumPartyMembers() > 0 then return "PARTY" end
+	if IsInRaid() then return "RAID" end
+	if IsInGroup() then return "PARTY" end
 	return nil
 end
 
@@ -4388,7 +3546,7 @@ local function threatTargetLabel()
 	-- The GUID's tail, because "Blackrock Sentry" is four mobs in a pack and the
 	-- question a run of unanswered queries raises first is whether they were even
 	-- about the same creature.
-	local guid = UnitGUID and UnitGUID("target")
+	local guid = UnitGUID("target")
 	return "\"" .. tostring(UnitName("target")) .. "\""
 		.. " " .. tostring(UnitClassification("target"))
 		.. (guid and ("#" .. string.sub(guid, -8)) or "")
@@ -4537,10 +3695,10 @@ local function threatEnv()
 	D.Log("  [env] SendAddonMessage = " .. type(SendAddonMessage)
 		.. ", ChatThrottleLib = " .. type(ChatThrottleLib)
 		.. (ChatThrottleLib and (" v" .. tostring(ChatThrottleLib.version)) or ""))
-	D.Log("  [env] raid " .. tostring(GetNumRaidMembers and GetNumRaidMembers())
-		.. ", party " .. tostring(GetNumPartyMembers and GetNumPartyMembers())
+	D.Log("  [env] raid " .. GetNumRaidMembers()
+		.. ", party " .. GetNumPartyMembers()
 		.. " -> channel " .. tostring(threatChannel()))
-	local loaded = function(name) return (IsAddOnLoaded and IsAddOnLoaded(name)) and true or false end
+	local loaded = function(name) return IsAddOnLoaded(name) and true or false end
 	D.Log("  [env] TWThreat loaded = " .. tostring(loaded("TWThreat")) .. ", TWT = " .. type(TWT)
 		.. (TWT_CONFIG and (", tankMode = " .. tostring(TWT_CONFIG.tankMode)
 			.. ", anyMob = " .. tostring(TWT_CONFIG.anyMob)) or ", no TWT_CONFIG"))
@@ -4548,7 +3706,7 @@ local function threatEnv()
 		.. ", SuperCleveRoidMacros = " .. tostring(loaded("SuperCleveRoidMacros")))
 	D.Log("  [env] target " .. threatTargetLabel()
 		.. ", creatureType " .. tostring(UnitCreatureType("target"))
-		.. ", guid " .. tostring(UnitGUID and UnitGUID("target")))
+		.. ", guid " .. tostring(UnitGUID("target")))
 	D.Log("  [env] player in combat = " .. tostring(UnitAffectingCombat("player") and true or false))
 end
 
@@ -4643,30 +3801,16 @@ function D.HandleSlash(msg)
 		D.ToggleWatch(rest)
 	elseif cmd == "events" then
 		D.ToggleEventLog(rest)
-	elseif cmd == "auraprobe" then
-		D.AuraProbe(rest)
-	elseif cmd == "overflow" then
-		D.Overflow(rest)
-	elseif cmd == "timers" then
-		D.Timers()
 	elseif cmd == "linkprobe" then
 		D.LinkProbe()
 	elseif cmd == "commprobe" then
 		D.CommProbe(rest)
 	elseif cmd == "threat" then
 		D.Threat(rest)
-	elseif cmd == "cdtest" then
-		D.CooldownTest()
-	elseif cmd == "modeltest" then
-		D.ModelTest(rest)
-	elseif cmd == "swipetest" then
-		D.SwipeTest(rest)
-	elseif cmd == "swipenudge" then
-		D.SwipeNudge(rest)
 	elseif cmd == "swipestress" then
 		D.SwipeStress(rest)
-	elseif cmd == "edgetest" then
-		if string.lower(rest or "") == "state" then D.EdgeState() else D.EdgeTest(rest) end
+	elseif cmd == "swipelog" then
+		D.SwipeLog(rest)
 	elseif cmd == "track" then
 		D.Track(rest)
 	elseif cmd == "states" then
@@ -4683,8 +3827,6 @@ function D.HandleSlash(msg)
 		D.Load(rest)
 	elseif cmd == "probe" then
 		D.Probe()
-	elseif cmd == "soundprobe" then
-		D.SoundProbe()
 	elseif cmd == "gcd" then
 		D.Gcd()
 	elseif cmd == "cdprobe" then
@@ -4739,6 +3881,6 @@ function D.HandleSlash(msg)
 		ensureFrame()
 		frame:Hide()
 	else
-		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], auraprobe [unit|all], overflow [unit], timers, linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], cdtest, modeltest [id], swipetest [sizes/WxH...], swipenudge <k> [yflat], swipestress [N], edgetest [state|0], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, soundprobe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, csprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, prof [start|stop|report [n]|reset], libs, addons, export <id>, import, clear, show, hide")
+		D.Log("[debug] unknown command \"" .. cmd .. "\". Available: dump [unit] [filter], watch [unit], events [EVENT ...], linkprobe, commprobe [charname|throttle [channel] [rate] [secs]], threat [send|query|tm|report|off], swipelog [secs], swipestress [N], track <spellName>, states <id>, conditions <id>, gen <id>, load <id>, probe, gcd, cdprobe <spell>, ver [version], codeprobe, textprobe, csprobe, texprobe [corners], progtex [id], levelprobe, plateprobe, wa2probe, wa2 <string>, codelive, codetab <1-8|tabs>, codefont <6-16>, rows, regions, configtest, prof [start|stop|report [n]|reset], libs, addons, export <id>, import, clear, show, hide")
 	end
 end

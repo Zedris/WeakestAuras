@@ -44,7 +44,7 @@ end
 local function progressSourceOptions(parentData)
 	local values = { -2 }
 	local labels = { [-2] = "This bar" }
-	local triggerCount = parentData.triggers and table.getn(parentData.triggers) or 0
+	local triggerCount = parentData.triggers and #parentData.triggers or 0
 	for i = 1, triggerCount do
 		table.insert(values, i)
 		labels[i] = "Trigger " .. i

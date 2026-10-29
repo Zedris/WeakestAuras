@@ -1,44 +1,10 @@
--- WeakestAuras -- Lua 5.0 shims the ported WeakAuras2 idioms lean on. Kept
--- deliberately small: only what's actually used, no speculative polyfills.
+-- WeakestAuras -- helpers the ported WeakAuras2 idioms lean on that ClassicAPI
+-- does not provide. Kept deliberately small: only what's actually used, no speculative polyfills.
 -- Upstream section refs (§N) point at design/architecture/weakauras2-reference.md
 
 if WeakestAuras.disabled then return end
 
 local WA = WeakestAuras
-
--- 5.1 added `math.huge`; 5.0 reads it back as nil, so `x or math.huge` inside a
--- comparison is a runtime error rather than the large number it looks like. The
--- division is how 5.0 spells the same infinity.
-WA.INF = 1 / 0
-
--- One 2^32-millisecond period, in seconds -- the width of the engine's tick
--- counter expressed on GetTime()'s scale.
-local TICK_WRAP = 4294967.296
-
--- Repairs a timestamp ClassicAPI read into a *signed* 32-bit int. Its
--- cooldown backports do `int startMs` and hand back `startMs * 0.001`
--- (src/spell/Cooldown.cpp, src/item/Cooldown.cpp -- the latter shared by
--- GetItemCooldown and C_Container.GetItemCooldown), while the engine's counter
--- is unsigned. Once the machine has been up past 2^31 ms (~24.9 days) every
--- timestamp from those two reads back exactly one period short, and negative:
--- a real start of 2697363.158 arrives as -1597604.138. A timestamp is never
--- legitimately negative, so the sign is the whole test.
---
--- Deliberately not applied everywhere: ClassicAPI's aura and cast paths cast
--- through uint32_t and are already right, as are vanilla's own
--- GetSpellCooldown/GetInventoryItemCooldown. Wrapping a correct value would
--- push it 49.7 days into the future.
-function WA.UnwrapTick(t)
-	if t and t < 0 then return t + TICK_WRAP end
-	return t
-end
-
--- 5.0 has no `wipe`; clearing keys in place preserves the table identity that
--- callers (memoization caches, per-tick scratch tables) hold a reference to.
-function WA.wipe(t)
-	for k in pairs(t) do t[k] = nil end
-	return t
-end
 
 -- The first `n` *characters* of a UTF-8 string. A plain string.sub cuts on a
 -- byte and can land inside a multi-byte sequence, which renders as a garbage
@@ -61,31 +27,17 @@ end
 
 -- xpcall-wrapped call with the aura id prefixed onto any error, so a broken
 -- aura reports itself and fails alone rather than taking down a whole tick
--- (§12's error-attribution pattern, minus the sandbox). 5.0's xpcall
--- takes no call args, so the arguments are staged in the file-locals below and
--- consumed by one persistent dispatcher -- capped at eleven, which is what the
--- widest call site needs: a compiled trigger function takes (state, event,
--- arg1..arg9). Returns the pcall-style (ok, result-or-error) so callers can
--- branch on success.
---
--- The staging is safe under nesting, and the reason is load-bearing: to execute
--- `return dfn(d1, ...)` Lua reads every one of these upvalues onto the stack
--- *before* the call, so by the time dfn's body runs -- the only place a nested
--- safecall can overwrite them -- the outer call has already consumed them. Do
--- not "simplify" this back to a fresh closure per call: safecall sits under
--- nearly every dispatch in the addon, and two closures per call was a real
--- share of the steady-state allocation churn.
+-- (§12's error-attribution pattern, minus the sandbox). ClassicAPI's xpcall
+-- forwards trailing arguments to the callee. The arguments are fixed
+-- parameters, capped at eleven -- what the widest call site needs: a compiled
+-- trigger function takes (state, event, arg1..arg9). A `...` signature would
+-- not do: ClassicAPI rewrites it to 5.0's `arg`, a fresh table per call, and
+-- safecall sits under nearly every dispatch in the addon. Returns the
+-- pcall-style (ok, result-or-error) so callers can branch on success.
 local errHandler = function(err) return err end
-local dfn, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11
-local function dispatch()
-	return dfn(d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11)
-end
 function WA.safecall(errTag, fn, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11)
 	if type(fn) ~= "function" then return false, "not a function" end
-	dfn = fn
-	d1, d2, d3, d4, d5, d6 = a1, a2, a3, a4, a5, a6
-	d7, d8, d9, d10, d11 = a7, a8, a9, a10, a11
-	local ok, res = xpcall(dispatch, errHandler)
+	local ok, res = xpcall(fn, errHandler, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11)
 	if not ok then
 		-- The options preview runs trigger code that was written to read a live
 		-- event payload, and an aura opted into swallowing that (WA2's

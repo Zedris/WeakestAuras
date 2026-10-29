@@ -91,8 +91,6 @@ local INTERNAL_EVENTS = {
 	-- Re-emitted by the threat watcher after parsing a TWThreat addon-message
 	-- broadcast (there's no threat game event; see the watcher below).
 	WA_THREAT_CHANGED = true,
-	-- Re-emitted by the totem watcher after a SPELL_GO_SELF totem drop commits.
-	WA_TOTEM_UPDATE = true,
 	-- Re-emitted by the swing-timer watcher on a swing reset / rescale / stop.
 	WA_SWING_UPDATE = true,
 	-- Re-emitted with the cast spell id after the player's own cast completes.
@@ -172,14 +170,17 @@ local COMMON_CUSTOM_EVENTS = {
 	"UNIT_ENERGY", "UNIT_RAGE", "BAG_UPDATE", "SPELLS_CHANGED",
 	"SPELL_UPDATE_COOLDOWN", "ACTIONBAR_UPDATE_COOLDOWN", "READY_CHECK",
 	"PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE", "CHAT_MSG_SAY",
-	"CHAT_MSG_PARTY", "CHAT_MSG_RAID", "CHAT_MSG_WHISPER", "UNIT_CASTEVENT",
+	"CHAT_MSG_PARTY", "CHAT_MSG_RAID", "CHAT_MSG_WHISPER",
+	"UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_SUCCEEDED",
+	"UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_STOP",
+	"COMBAT_LOG_EVENT_UNFILTERED",
 }
 local customEventSearch = {}
 
 -- One "EVENT:a:b" token's colon-separated parts.
 local function splitEventToken(token)
 	local parts = {}
-	for part in string.gfind(token, "[^:]+") do table.insert(parts, part) end
+	for part in string.gmatch(token, "[^:]+") do table.insert(parts, part) end
 	return parts
 end
 
@@ -187,49 +188,58 @@ end
 -- three things this client can act on: the events to register, a per-event set of
 -- unit tokens to filter arg1 against, and the trigger numbers to watch.
 --
--- "UNIT_AURA:player:target" is a filter rather than a narrower registration --
--- RegisterUnitEvent does not exist on this client (gotchas.md), so the general
--- event is registered and dispatch drops payloads whose unit is not listed.
+-- "UNIT_AURA:player:target" is a filter rather than a narrower registration: the
+-- general event is registered and dispatch drops payloads whose unit is not
+-- listed.
 -- "TRIGGER:2" names another of the display's triggers and registers no game
--- event at all. A "CLEU:"/"COMBAT_LOG_EVENT_UNFILTERED:" token resolves to
--- nothing: this client's combat log is SuperWoW's RAW_COMBATLOG, whose adapter
--- does not exist, and registering the modern name would silently never fire.
+-- event at all. "CLEU" is upstream's alias for COMBAT_LOG_EVENT_UNFILTERED, and
+-- "CLEU:SPELL_DAMAGE:SPELL_HEAL" filters on the subevent (arg2) the way
+-- "UNIT_AURA:player" filters on the unit. A bare CLEU token takes every subevent.
 local function parseCustomEventList(str)
 	local eventList, unitFilters, watched = {}, nil, nil
+	local cleu, subeventFilter, cleuAll = false, nil, false
 	local tokens = parseEventList(str)
-	for i = 1, table.getn(tokens) do
+	for i = 1, #tokens do
 		local token = tokens[i]
 		local parts = splitEventToken(token)
 		local base = parts[1]
 		local upper = base and string.upper(base) or ""
 		if upper == "CLEU" or upper == "COMBAT_LOG_EVENT_UNFILTERED" then
-			-- no adapter
+			if not cleu then
+				cleu = true
+				table.insert(eventList, "COMBAT_LOG_EVENT_UNFILTERED")
+			end
+			if #parts == 1 then cleuAll = true end
+			for p = 2, #parts do
+				subeventFilter = subeventFilter or {}
+				subeventFilter[string.upper(parts[p])] = true
+			end
 		elseif upper == "TRIGGER" then
-			for p = 2, table.getn(parts) do
+			for p = 2, #parts do
 				local num = tonumber(parts[p])
 				if num then
 					watched = watched or {}
 					watched[num] = true
 				end
 			end
-		elseif table.getn(parts) > 1 and string.find(upper, "^UNIT_") then
+		elseif #parts > 1 and string.find(upper, "^UNIT_") then
 			table.insert(eventList, base)
 			unitFilters = unitFilters or {}
 			local set = unitFilters[base] or {}
 			unitFilters[base] = set
-			for p = 2, table.getn(parts) do
+			for p = 2, #parts do
 				set[string.lower(parts[p])] = true
 			end
 		else
 			table.insert(eventList, base or token)
 		end
 	end
-	return eventList, unitFilters, watched
+	if cleuAll then subeventFilter = nil end
+	return eventList, unitFilters, watched, subeventFilter
 end
 
 local function isClientEvent(name)
 	if isInternalEvent(name) then return true end
-	if not (C_EventUtils and C_EventUtils.IsEventValid) then return true end
 	return C_EventUtils.IsEventValid(name) and true or false
 end
 
@@ -250,7 +260,7 @@ local EVENT_COMPAT = {
 -- Client event -> the compat names it feeds, for dispatch's second pass.
 local EVENT_COMPAT_SOURCES = {}
 for name, sources in pairs(EVENT_COMPAT) do
-	for i = 1, table.getn(sources) do
+	for i = 1, #sources do
 		EVENT_COMPAT_SOURCES[sources[i]] = EVENT_COMPAT_SOURCES[sources[i]] or {}
 		table.insert(EVENT_COMPAT_SOURCES[sources[i]], name)
 	end
@@ -259,18 +269,18 @@ end
 -- Names the editor should flag, in two piles: `invalid` this client neither
 -- fires nor redirects, and `redirected` the EVENT_COMPAT names -- which work,
 -- and deserve a note saying how rather than a warning saying they don't. A
--- token carrying the extended syntax is judged on its base event, and the two
--- forms that name no game event at all are exempt rather than reported as
+-- token carrying the extended syntax is judged on its base event, and TRIGGER
+-- (no game event) and CLEU (an alias) are exempt rather than reported as
 -- unregisterable.
 local function invalidEventList(str)
 	local invalid, redirected = {}, {}
 	local names = parseEventList(str)
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		local parts = splitEventToken(names[i])
 		local base = parts[1] or names[i]
 		local upper = string.upper(base)
-		if upper == "TRIGGER" or upper == "CLEU" or upper == "COMBAT_LOG_EVENT_UNFILTERED" then
-			-- resolves to no game event
+		if upper == "TRIGGER" or upper == "CLEU" then
+			-- not a client event name
 		elseif EVENT_COMPAT[base] then
 			table.insert(redirected, base)
 		elseif not isClientEvent(base) then
@@ -284,16 +294,16 @@ local function eventPickerValues(query)
 	local values, labels = {}, {}
 	local needle = string.upper(query or "")
 	local source = needle == "" and COMMON_CUSTOM_EVENTS or (WA.customEventCatalog or {})
-	for i = 1, table.getn(source) do
+	for i = 1, #source do
 		local name = source[i]
 		if isClientEvent(name)
 			and (needle == "" or string.find(name, needle, 1, true)) then
 			table.insert(values, name)
 			labels[name] = name
-			if table.getn(values) >= 40 then break end
+			if #values >= 40 then break end
 		end
 	end
-	if table.getn(values) == 0 then
+	if #values == 0 then
 		table.insert(values, "__NO_EVENT_MATCH__")
 		labels.__NO_EVENT_MATCH__ = "No matching events"
 	end
@@ -303,7 +313,7 @@ end
 local function appendEventName(str, name)
 	if name == "__NO_EVENT_MATCH__" then return str or "" end
 	local names = parseEventList(str)
-	for i = 1, table.getn(names) do
+	for i = 1, #names do
 		if names[i] == name then return str or "" end
 	end
 	if not str or not string.find(str, "%S") then return name end
@@ -338,12 +348,41 @@ local function multiSelectSource(trigger, name, var)
 				table.insert(terms, string.format("%s == %s", var, fmt(tonumber(value) or value)))
 			end
 		end
-		if table.getn(terms) == 0 then return "false" end
+		if #terms == 0 then return "false" end
 		return table.concat(terms, " or ")
 	elseif mode == "single" then
 		return string.format("%s == %s", var, fmt(trigger[name]))
 	end
 	return nil
+end
+
+-- The compiled half of a `list` filter: the value matches any entry. Where the
+-- arg sets `listNegate`, an entry led by "-" excludes its value instead, as
+-- upstream's ParseStringCheck does -- so a list of exclusions alone passes
+-- anything else, a nil value included. A `listNumeric` arg skips an entry that
+-- is not a number. A list with nothing usable matches nothing. The value is the
+-- local `listVar` names, the arg's own name by default.
+local function listSource(arg, entries)
+	if type(entries) ~= "table" then entries = { entries } end
+	local var = arg.listVar or arg.name
+	local include, exclude = {}, {}
+	for i = 1, #entries do
+		local _, _, negate, value = string.find(tostring(entries[i]), "^%s*(%-?)%s*(.-)%s*$")
+		if negate ~= "" and not arg.listNegate then value = negate .. value; negate = "" end
+		if arg.listNumeric then value = tonumber(value) end
+		if value ~= nil and value ~= "" then
+			if negate ~= "" then
+				table.insert(exclude, string.format("%s ~= %s", var, fmt(value)))
+			else
+				table.insert(include, string.format("%s == %s", var, fmt(value)))
+			end
+		end
+	end
+	if #include == 0 and #exclude == 0 then return "false" end
+	local parts = {}
+	if #include > 0 then table.insert(parts, "(" .. table.concat(include, " or ") .. ")") end
+	if #exclude > 0 then table.insert(parts, table.concat(exclude, " and ")) end
+	return table.concat(parts, " and ")
 end
 
 -- The test source for one arg, or nil if it contributes none. A `test` win:
@@ -380,6 +419,17 @@ local function constructArgTest(arg, trigger)
 	elseif arg.type == "multiselect" then
 		local src = multiSelectSource(trigger, arg.name, arg.name)
 		return src and ("(" .. src .. ")") or nil
+	elseif arg.type == "list" then
+		if not arg.required and not trigger["use_" .. arg.name] then return nil end
+		return "(" .. listSource(arg, trigger[arg.name]) .. ")"
+	elseif arg.type == "tristate" then
+		-- Upstream's three-way flag lives in use_<name> alone: nil ignores the
+		-- field, true requires it, false requires its absence. The field itself
+		-- is a local the init fills, not a setting.
+		local use = trigger["use_" .. arg.name]
+		if use == true then return "(" .. arg.name .. ")" end
+		if use == false then return "(not " .. arg.name .. ")" end
+		return nil
 	elseif arg.type == "string" then
 		if not arg.required and not trigger["use_" .. arg.name] then return nil end
 		local op = trigger[arg.name .. "_operator"] or "=="
@@ -403,16 +453,17 @@ local function constructArgTest(arg, trigger)
 end
 
 -- Compiles prototype+trigger into one test function (§4.2). Signature
--- (state, event, arg1..arg9): the status prototypes re-read live game state in
+-- (state, event, arg1..arg12): the status prototypes re-read live game state in
 -- `init` and ignore the event args, but the parameters carry the firing event's
 -- real payload, so a prototype can test against it instead of re-polling.
+-- Dispatch carries nine; only a chat event fills arg10..arg12 (runTriggerCode).
 local function constructFunction(proto, trigger, errTag)
 	local lines = {}
-	table.insert(lines, "return function(state, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9)")
+	table.insert(lines, "return function(state, event, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12)")
 	if proto.init then
 		table.insert(lines, proto.init(trigger))
 	end
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
 		if arg.init then
 			table.insert(lines, string.format("local %s = %s", arg.name, arg.init))
@@ -420,13 +471,20 @@ local function constructFunction(proto, trigger, errTag)
 	end
 
 	local tests = {}
-	for i = 1, table.getn(proto.args) do
-		local t = constructArgTest(proto.args[i], trigger)
-		if t then table.insert(tests, t) end
+	for i = 1, #proto.args do
+		local arg = proto.args[i]
+		-- An arg whose enable() is false is not part of this configuration (the
+		-- editor omits its control), so its test is left out too: a use_<name>
+		-- left on from an earlier mode would otherwise compile a comparison
+		-- against a local the current mode never fills.
+		if not (arg.enable and not arg.enable(trigger)) then
+			local t = constructArgTest(arg, trigger)
+			if t then table.insert(tests, t) end
+		end
 	end
-	local cond = table.getn(tests) > 0 and table.concat(tests, " and ") or "true"
+	local cond = #tests > 0 and table.concat(tests, " and ") or "true"
 
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
 		if arg.store and arg.storeAlways then
 			table.insert(lines, string.format(
@@ -435,7 +493,7 @@ local function constructFunction(proto, trigger, errTag)
 		end
 	end
 	table.insert(lines, "if (" .. cond .. ") then")
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
 		if arg.store and not arg.storeAlways then
 			table.insert(lines, string.format(
@@ -536,10 +594,8 @@ function WA.ResolveSpellID(input)
 	if id then return id end
 	local bookId = WA.SpellIDByBookName(input)
 	if bookId then return bookId end
-	if C_Spell and C_Spell.GetSpellInfo then
-		local info = C_Spell.GetSpellInfo(input)
-		if info and info.spellID then return info.spellID end
-	end
+	local info = C_Spell.GetSpellInfo(input)
+	if info and info.spellID then return info.spellID end
 	noteUnresolved(input)
 	return nil
 end
@@ -565,8 +621,7 @@ local spellSlotByName, spellSlotById
 
 local function buildSpellSlotIndex()
 	spellSlotByName, spellSlotById = {}, {}
-	if not (GetNumSpellTabs and GetSpellTabInfo and GetSpellName) then return end
-	for tab = 1, (GetNumSpellTabs() or 0) do
+	for tab = 1, GetNumSpellTabs() do
 		local _, _, offset, numSlots = GetSpellTabInfo(tab)
 		if offset and numSlots then
 			for i = offset + 1, offset + numSlots do
@@ -601,7 +656,7 @@ end
 -- everywhere else and the one that carries the cooldown.
 function WA.SpellIDByBookName(name)
 	local slot = WA.SpellSlotByName(name)
-	if not slot or not GetSpellInfo then return nil end
+	if not slot then return nil end
 	local ok, _, _, _, _, _, _, _, _, _, id = pcall(GetSpellInfo, slot, BOOKTYPE_SPELL or "spell")
 	if not ok then return nil end
 	return id
@@ -617,7 +672,7 @@ function WA.SpellSlotByID(spellId)
 	end
 	local hit = spellSlotById[spellId]
 	if hit ~= nil then return hit or nil end
-	local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellId)
+	local name = C_Spell.GetSpellName(spellId)
 	local slot = name and spellSlotByName[name]
 	spellSlotById[spellId] = slot or false
 	return slot
@@ -626,7 +681,7 @@ end
 -- (start, duration) off a spellbook slot, or nil. pcall'd: a slot that has gone
 -- out of range (the book shrank) raises rather than answering.
 function WA.SpellSlotCooldown(slot)
-	if not slot or not GetSpellCooldown then return nil end
+	if not slot then return nil end
 	local ok, start, duration = pcall(GetSpellCooldown, slot, BOOKTYPE_SPELL or "spell")
 	if not ok or not start or not duration then return nil end
 	return start, duration
@@ -641,7 +696,7 @@ end
 -- has no spellbook button.
 function WA.SpellIsKnown(spellId)
 	if not spellId or spellId == 0 then return false end
-	if IsPlayerSpell and IsPlayerSpell(spellId) then return true end
+	if IsPlayerSpell(spellId) then return true end
 	return WA.SpellSlotByID(spellId) ~= nil
 end
 
@@ -675,7 +730,7 @@ function WA.ItemIDByName(name)
 
 	local function matches(id)
 		if not id then return nil end
-		local n = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(id)
+		local n = C_Item.GetItemNameByID(id)
 		if n and string.lower(n) == lname then return id end
 		return nil
 	end
@@ -686,19 +741,15 @@ function WA.ItemIDByName(name)
 	end
 
 	-- Equipped first: cheapest, and the one place a bag walk cannot look.
-	if GetInventoryItemID then
-		for slot = 1, 19 do
-			local hit = matches(GetInventoryItemID("player", slot))
-			if hit then return remember(hit) end
-		end
+	for slot = 1, 19 do
+		local hit = matches(GetInventoryItemID("player", slot))
+		if hit then return remember(hit) end
 	end
-	if C_Container and C_Container.GetContainerItemID and GetContainerNumSlots then
-		for i = 1, table.getn(SCAN_BAGS) do
-			local bag = SCAN_BAGS[i]
-			for slot = 1, (GetContainerNumSlots(bag) or 0) do
-				local hit = matches(C_Container.GetContainerItemID(bag, slot))
-				if hit then return remember(hit) end
-			end
+	for i = 1, #SCAN_BAGS do
+		local bag = SCAN_BAGS[i]
+		for slot = 1, GetContainerNumSlots(bag) do
+			local hit = matches(C_Container.GetContainerItemID(bag, slot))
+			if hit then return remember(hit) end
 		end
 	end
 
@@ -723,7 +774,7 @@ itemNameRetryFrame:SetScript("OnEvent", function()
 	end
 	if not retry then return end
 	local resolved = false
-	for i = 1, table.getn(retry) do
+	for i = 1, #retry do
 		-- Clear the rate-limit stamp: a bag change is exactly the event that can
 		-- make this walk succeed, so it should not be waited out.
 		itemNameMissAt[retry[i]] = nil
@@ -771,20 +822,14 @@ function WA.ItemTypeEquipped(wantedClassID, wantedSubclasses, selectedSlot)
 		startSlot, endSlot = tonumber(selectedSlot), tonumber(selectedSlot)
 	end
 	for slot = startSlot, endSlot do
-		local id = GetInventoryItemID and GetInventoryItemID("player", slot)
+		local id = GetInventoryItemID("player", slot)
 		if id then
 			equipped = true
-			local itemID, itemClass, itemSubclass, _, itemIcon, classID, subclassID
-			if C_Item and C_Item.GetItemInfoInstant then
-				itemID, itemClass, itemSubclass, _, itemIcon, classID, subclassID = C_Item.GetItemInfoInstant(id)
-			end
+			local itemID, itemClass, itemSubclass, _, itemIcon, classID, subclassID = C_Item.GetItemInfoInstant(id)
 			local known = itemID and classID ~= nil and subclassID ~= nil
 			if not firstSeen then firstID = itemID or id end
 			if known then
-				local itemName, cachedIcon
-				if C_Item and C_Item.GetItemInfo then
-					itemName, _, _, _, _, _, _, _, _, cachedIcon = C_Item.GetItemInfo(itemID)
-				end
+				local itemName, _, _, _, _, _, _, _, _, cachedIcon = C_Item.GetItemInfo(itemID)
 				itemIcon = itemIcon or cachedIcon
 				if not firstKnown and not firstSeen then
 					firstName, firstIcon = itemName, itemIcon
@@ -817,14 +862,12 @@ function WA.ItemSetEquipped(setID)
 	local count = 0
 	local setName
 	local known = false
-	if C_Item and C_Item.GetItemSetInfo then
-		local info = C_Item.GetItemSetInfo(targetID)
-		if info then
-			setName = info.name
-			known = true
-		end
+	local info = C_Item.GetItemSetInfo(targetID)
+	if info then
+		setName = info.name
+		known = true
 	end
-	if targetID > 0 and C_Item and C_Item.GetItemSetIDByID and GetInventoryItemID then
+	if targetID > 0 then
 		for slot = 1, 18 do
 			local itemID = GetInventoryItemID("player", slot)
 			local equippedSetID = itemID and C_Item.GetItemSetIDByID(itemID)
@@ -836,20 +879,17 @@ end
 
 function WA.EquipmentSetInfo(setName, partial)
 	setName = setName or ""
-	if C_EquipmentSet and C_EquipmentSet.GetEquipmentSetID
-		and C_EquipmentSet.GetEquipmentSetInfo then
-		local setID = C_EquipmentSet.GetEquipmentSetID(setName)
-		if setID then
-			local name, icon, _, isEquipped, numItems, numEquipped, _, _, numIgnored =
-				C_EquipmentSet.GetEquipmentSetInfo(setID)
-			if name then
-				numItems = tonumber(numItems) or 0
-				numEquipped = tonumber(numEquipped) or 0
-				numIgnored = tonumber(numIgnored) or 0
-				local active = (partial and numItems > 0 and numEquipped > 0)
-					or ((not partial) and isEquipped and true or false)
-				return name, icon, numEquipped, numItems, active and true or false, setID, numIgnored
-			end
+	local setID = C_EquipmentSet.GetEquipmentSetID(setName)
+	if setID then
+		local name, icon, _, isEquipped, numItems, numEquipped, _, _, numIgnored =
+			C_EquipmentSet.GetEquipmentSetInfo(setID)
+		if name then
+			numItems = tonumber(numItems) or 0
+			numEquipped = tonumber(numEquipped) or 0
+			numIgnored = tonumber(numIgnored) or 0
+			local active = (partial and numItems > 0 and numEquipped > 0)
+				or ((not partial) and isEquipped and true or false)
+			return name, icon, numEquipped, numItems, active and true or false, setID, numIgnored
 		end
 	end
 
@@ -864,7 +904,7 @@ function WA.EquipmentSetInfo(setName, partial)
 				local entry = set[slot]
 				if entry then
 					total = total + 1
-					local equippedID = GetInventoryItemID and GetInventoryItemID("player", slot)
+					local equippedID = GetInventoryItemID("player", slot)
 					if equippedID and tonumber(entry.id) == tonumber(equippedID) then count = count + 1 end
 				end
 			end
@@ -885,23 +925,20 @@ end
 function WA.ItemCount(input, includeBank)
 	local id = WA.ResolveItemID(input)
 	if not id then return 0, false end
-	if not (C_Item and C_Item.GetItemCount) then return 0, true end
 	return C_Item.GetItemCount(id, includeBank and true or false) or 0, true
 end
 
 -- Bool condition/filter for "is `unit` in range of this spell", unit defaulting
 -- to "target" for the spell-cooldown caller. SpellHasRange gates self-buffs and
 -- other unrestricted spells to always-true rather than gating on a unit the
--- spell was never range-limited against; UnitInRange is the ClassicAPI 40yd
--- position check. Real Lua (not generated source) since neither call needs
--- per-trigger config.
+-- spell was never range-limited against; IsSpellInRange is the engine's own
+-- per-spell range check, melee and minimum range included. Real Lua (not
+-- generated source) since neither call needs per-trigger config.
 function WA.SpellInRange(spellId, unit)
 	unit = unit or "target"
-	local hasRange = C_Spell and C_Spell.SpellHasRange and C_Spell.SpellHasRange(spellId)
-	if not hasRange then return true end
+	if not C_Spell.SpellHasRange(spellId) then return true end
 	if not UnitExists(unit) then return false end
-	if not UnitInRange then return true end -- can't check on this build; don't gate
-	return UnitInRange(unit) and true or false
+	return C_Spell.IsSpellInRange(spellId, unit) == true
 end
 
 -- IsUsableSpell covers cast requirements but not proc state. When a spell is
@@ -918,16 +955,13 @@ function WA.ActionUsability(spellId)
 			end
 		end
 	end
-	if IsUsableSpell then
-		local usable, insufficientResources = IsUsableSpell(spellId)
-		return usable and true or false, insufficientResources and true or false
-	end
-	return false, false
+	local usable, insufficientResources = IsUsableSpell(spellId)
+	return usable and true or false, insufficientResources and true or false
 end
 
 -- The unit token a trigger actually targets: the dropdown's choice, or the
 -- free-text override when the dropdown's "specific" entry is selected (raid17,
--- partyN, or a SuperWoW GUID). Resolved at compile time and baked into the
+-- partyN, or a GUID). Resolved at compile time and baked into the
 -- generated source, like every other trigger constant.
 function WA.TriggerUnit(trigger, fallback)
 	if trigger.unit == "specific" then
@@ -947,7 +981,6 @@ end
 -- nil, which is why an item trigger drew no icon.
 local function itemNameIcon(id)
 	if not id then return nil, nil end
-	if not (C_Item and C_Item.GetItemInfo) then return nil, nil end
 	local name, _, _, _, _, _, _, _, _, icon = C_Item.GetItemInfo(id)
 	return name, icon
 end
@@ -1009,7 +1042,7 @@ local unitWatchFrame
 local diffScratch = {}
 
 local function diffUnitToken(token)
-	local guid = (UnitGUID and UnitGUID(token)) or NO_UNIT
+	local guid = UnitGUID(token) or NO_UNIT
 	if tokenGuid[token] == guid then return end
 	tokenGuid[token] = guid
 	-- The GUID, not the event, is what defines a change: a target-to-target
@@ -1029,7 +1062,7 @@ local function diffUnitTokens(set)
 end
 
 local function runWatchCallbacks()
-	for i = 1, table.getn(watchCallbacks) do
+	for i = 1, #watchCallbacks do
 		WA.safecall("unit watch callback", watchCallbacks[i])
 	end
 end
@@ -1037,7 +1070,7 @@ end
 local function ensureUnitWatchFrame()
 	if unitWatchFrame then return end
 	unitWatchFrame = CreateFrame("Frame")
-	for i = 1, table.getn(UNIT_WATCH_EVENTS) do
+	for i = 1, #UNIT_WATCH_EVENTS do
 		-- Guarded on the same grounds as ensureEventRegistered's: an event name
 		-- this build does not know must not error out the load that asked for it.
 		pcall(unitWatchFrame.RegisterEvent, unitWatchFrame, UNIT_WATCH_EVENTS[i])
@@ -1068,7 +1101,7 @@ function WA.WatchUnitToken(token)
 	if count then return end
 	-- Seeded rather than dispatched: LoadDisplays' own force_events pass is what
 	-- gives the new trigger its first read.
-	tokenGuid[token] = (UnitGUID and UnitGUID(token)) or NO_UNIT
+	tokenGuid[token] = UnitGUID(token) or NO_UNIT
 	ensureUnitWatchFrame()
 	if not EVENTED_UNIT_TOKENS[token] then
 		polledTokens[token] = true
@@ -1148,7 +1181,6 @@ local function weLearnedDurations()
 end
 
 function WA.WeaponEnchantInfo(hand)
-	if not (C_Item and C_Item.GetWeaponEnchantInfo) then return false, 0, 0, nil end
 	local hM, eM, cM, idM, hO, eO, cO, idO, hR, eR, cR, idR = C_Item.GetWeaponEnchantInfo()
 	local has, expireMs, enchantId
 	if hand == "off" then has, expireMs, enchantId = hO, eO, idO
@@ -1186,13 +1218,13 @@ local weIconCache = {}
 local WE_ICON_SLOT = { main = 16, off = 17, ranged = 18 }
 function WA.WeaponEnchantIcon(hand, enchantId)
 	local icon = enchantId and weIconCache[enchantId]
-	if icon == nil and enchantId and C_Item and C_Item.GetEnchantInfo then
+	if icon == nil and enchantId then
 		icon = false
 		local info = C_Item.GetEnchantInfo(enchantId)
 		if info then
 			local spellId = info.spellID
 			if not spellId and info.effects then
-				for i = 1, table.getn(info.effects) do
+				for i = 1, #info.effects do
 					local e = info.effects[i]
 					if e and (e.type == 1 or e.type == 3 or e.type == 7) and e.arg then
 						spellId = e.arg
@@ -1200,17 +1232,14 @@ function WA.WeaponEnchantIcon(hand, enchantId)
 					end
 				end
 			end
-			if spellId and C_Spell and C_Spell.GetSpellTexture then
+			if spellId then
 				icon = C_Spell.GetSpellTexture(spellId) or false
 			end
 		end
 		weIconCache[enchantId] = icon
 	end
 	if icon then return icon end
-	if GetInventoryItemTexture then
-		return GetInventoryItemTexture("player", WE_ICON_SLOT[hand] or 16)
-	end
-	return nil
+	return GetInventoryItemTexture("player", WE_ICON_SLOT[hand] or 16)
 end
 
 -- Reputation standing for a named faction. Walks the displayed faction list
@@ -1219,7 +1248,7 @@ end
 -- barMax/barValue bracket the current standing bar. nil when the faction isn't
 -- in the player's list (not yet encountered).
 function WA.FactionStanding(name)
-	if not name or name == "" or not GetNumFactions then return nil end
+	if not name or name == "" then return nil end
 	for i = 1, GetNumFactions() do
 		local fname, _, standingID, barMin, barMax, barValue, _, _, isHeader = GetFactionInfo(i)
 		if not isHeader and fname == name then
@@ -1229,64 +1258,25 @@ function WA.FactionStanding(name)
 	return nil
 end
 
--- Crowd-control category table (English spell names -> category), adapted from
--- the reference LoseControl addon's Babble-Spell keyed table. On an English
--- client Babble-Spell is identity, so those keys ARE the plain spell names --
--- reproduced here directly since we ship no Babble-Spell. Categories match
--- LoseControl's (stuns/incapacitates/fears all fold into "CC"); a couple of its
--- entries that aren't really control effects (e.g. Mortal Strike, a heal debuff)
--- are dropped so a CC display doesn't false-positive on them.
-local CC_CATEGORIES = {
-	-- Druid
-	["Hibernate"] = "CC", ["Bash"] = "CC", ["Pounce"] = "CC", ["Feral Charge Effect"] = "Root",
-	["Entangling Roots"] = "Root",
-	-- Hunter
-	["Freezing Trap Effect"] = "CC", ["Intimidation"] = "CC", ["Scare Beast"] = "CC",
-	["Scatter Shot"] = "CC", ["Wyvern Sting"] = "CC", ["Concussive Shot"] = "Snare",
-	["Frost Trap Aura"] = "Root", ["Counterattack"] = "Root", ["Improved Wing Clip"] = "Root",
-	["Wing Clip"] = "Snare", ["Entrapment"] = "Root",
-	-- Mage
-	["Polymorph"] = "CC", ["Polymorph: Turtle"] = "CC", ["Polymorph: Pig"] = "CC",
-	["Counterspell - Silenced"] = "Silence", ["Impact"] = "CC", ["Blast Wave"] = "Snare",
-	["Frostbite"] = "Root", ["Freeze"] = "Root", ["Frost Nova"] = "Root",
-	["Frostbolt"] = "Snare", ["Chilled"] = "Snare", ["Cone of Cold"] = "Snare",
-	-- Paladin
-	["Hammer of Justice"] = "CC", ["Repentance"] = "CC",
-	-- Priest
-	["Mind Control"] = "CC", ["Psychic Scream"] = "CC", ["Blackout"] = "CC",
-	["Silence"] = "Silence", ["Mind Flay"] = "Snare",
-	-- Rogue
-	["Blind"] = "CC", ["Cheap Shot"] = "CC", ["Gouge"] = "CC", ["Kidney Shot"] = "CC",
-	["Sap"] = "CC", ["Kick - Silenced"] = "Silence", ["Crippling Poison"] = "Snare",
-	-- Warlock
-	["Death Coil"] = "CC", ["Fear"] = "CC", ["Howl of Terror"] = "CC",
-	["Curse of Exhaustion"] = "Snare", ["Seduction"] = "CC", ["Spell Lock"] = "Silence",
-	["Aftermath"] = "Snare", ["Cripple"] = "Snare",
-	-- Warrior
-	["Charge Stun"] = "CC", ["Intercept Stun"] = "CC", ["Intimidating Shout"] = "CC",
-	["Concussion Blow"] = "CC", ["Piercing Howl"] = "Snare",
-	["Shield Bash - Silenced"] = "Silence", ["Disarm"] = "Disarm",
-	-- Other / creature
-	["War Stomp"] = "CC", ["Mace Stun Effect"] = "CC", ["Web"] = "Root", ["Net"] = "Root",
-	["Knockdown"] = "CC", ["Sleep"] = "CC", ["Dazed"] = "Snare", ["Tidal Charm"] = "CC",
-	["Gnomish Mind Control Cap"] = "CC",
-}
-
--- First crowd-control debuff on the player, or (false, ...). Player-unit aura
--- timing is the reliable path on this client (real duration/expiration only for
--- unit == "player"), which is exactly what a "am I CC'd" display
--- needs. Scans HARMFUL and stops at the first nil slot (compacting list).
-function WA.ScanPlayerCC()
-	if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return false end
-	for i = 1, 40 do
-		local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HARMFUL")
-		if not aura then break end
-		local cat = aura.name and CC_CATEGORIES[aura.name]
-		if cat then
-			return true, cat, aura.name, aura.icon, aura.expirationTime or 0, aura.duration or 0
+-- The first active loss-of-control effect on the player that matches, or
+-- (false, ...). A nil controlType matches any type; a SCHOOL_INTERRUPT match
+-- can be narrowed to the schools in schoolMask. C_LossOfControl classifies from
+-- the spell's own data and takes CC timing from the server's player aura timer.
+-- A school lockout carries no spell, so it reports spellID 0 and the locked
+-- schools as `school`.
+function WA.PlayerLossOfControl(controlType, schoolMask)
+	for i = 1, C_LossOfControl.GetActiveLossOfControlDataCount() do
+		local d = C_LossOfControl.GetActiveLossOfControlData(i)
+		if d and (not controlType or d.locType == controlType)
+			and (not schoolMask or d.locType ~= "SCHOOL_INTERRUPT"
+				or bit.band(d.lockoutSchool, schoolMask) ~= 0) then
+			local school = d.lockoutSchool ~= 0 and C_Spell.GetSchoolString(d.lockoutSchool) or nil
+			local expirationTime = d.timeRemaining and (GetTime() + d.timeRemaining) or 0
+			local icon = d.iconTexture ~= "" and d.iconTexture or nil
+			return true, d.locType, d.spellID, d.displayText, icon, expirationTime, d.duration or 0, school
 		end
 	end
-	return false, nil, nil, nil, 0, 0
+	return false, nil, nil, nil, nil, 0, 0, nil
 end
 
 do -- scoped; see the local-ceiling note in the file header
@@ -1308,19 +1298,16 @@ do -- scoped; see the local-ceiling note in the file header
 --     UnitDefense returns base and modifier, which have to be summed.
 
 local function primaryStat(index)
-	if not UnitStat then return 0 end
 	local _, effective = UnitStat("player", index)
 	return effective or 0
 end
 
 local function resistance(school)
-	if not UnitResistance then return 0 end
 	local _, total = UnitResistance("player", school)
 	return total or 0
 end
 
 local function schoolPower(school)
-	if not GetSpellBonusDamage then return 0 end
 	return GetSpellBonusDamage(school) or 0
 end
 
@@ -1331,7 +1318,6 @@ local function effectiveAttackPower(fn)
 end
 
 local function weaponSpeed(offHand)
-	if not UnitAttackSpeed then return 0 end
 	local main, off = UnitAttackSpeed("player")
 	if offHand then return off or 0 end
 	return main or 0
@@ -1366,25 +1352,23 @@ local STAT_READERS = {
 	spellPowerShadow = function() return schoolPower(6) end,
 	spellPowerArcane = function() return schoolPower(7) end,
 	healingPower = function()
-		return (GetSpellBonusHealing and GetSpellBonusHealing()) or 0
+		return GetSpellBonusHealing() or 0
 	end,
 	spellHaste = function()
-		return (UnitSpellHaste and UnitSpellHaste("player")) or 0
+		return UnitSpellHaste("player") or 0
 	end,
 
 	armor = function()
-		if not UnitArmor then return 0 end
 		local _, effective = UnitArmor("player")
 		return effective or 0
 	end,
 	defense = function()
-		if not UnitDefense then return 0 end
 		local base, modifier = UnitDefense("player")
 		return (base or 0) + (modifier or 0)
 	end,
-	dodge = function() return (GetDodgeChance and GetDodgeChance()) or 0 end,
-	parry = function() return (GetParryChance and GetParryChance()) or 0 end,
-	block = function() return (GetBlockChance and GetBlockChance()) or 0 end,
+	dodge = function() return GetDodgeChance() or 0 end,
+	parry = function() return GetParryChance() or 0 end,
+	block = function() return GetBlockChance() or 0 end,
 
 	resistHoly = function() return resistance(1) end,
 	resistFire = function() return resistance(2) end,
@@ -1436,12 +1420,12 @@ local CHAT_MESSAGE_VALUES = {
 	"CHAT_MSG_BG_SYSTEM_NEUTRAL", "CHAT_MSG_BG_SYSTEM_ALLIANCE", "CHAT_MSG_BG_SYSTEM_HORDE",
 }
 local CHAT_MESSAGE_LABELS = {}
-for i = 1, table.getn(CHAT_MESSAGE_VALUES) do
+for i = 1, #CHAT_MESSAGE_VALUES do
 	local value = CHAT_MESSAGE_VALUES[i]
 	CHAT_MESSAGE_LABELS[value] = string.sub(value, 10)
 end
 local CHAT_MESSAGE_ALL_EVENTS = {}
-for i = 1, table.getn(CHAT_MESSAGE_VALUES) do table.insert(CHAT_MESSAGE_ALL_EVENTS, CHAT_MESSAGE_VALUES[i]) end
+for i = 1, #CHAT_MESSAGE_VALUES do table.insert(CHAT_MESSAGE_ALL_EVENTS, CHAT_MESSAGE_VALUES[i]) end
 table.insert(CHAT_MESSAGE_ALL_EVENTS, "CHAT_MSG_PARTY_LEADER")
 table.insert(CHAT_MESSAGE_ALL_EVENTS, "CHAT_MSG_RAID_LEADER")
 table.insert(CHAT_MESSAGE_ALL_EVENTS, "CHAT_MSG_TEXT_EMOTE")
@@ -1458,7 +1442,6 @@ local function chatMessageEvents(trigger)
 end
 
 function WA.TalentInfo(wanted, wantedTab, wantedTier, wantedColumn)
-	if not (GetNumTalentTabs and GetNumTalents and GetTalentInfo) then return false, false, 0, 0, 0, 0, 0, nil, nil end
 	if not wanted or wanted == "" then return false, false, 0, 0, 0, 0, 0, nil, nil end
 	local tabs = tonumber(GetNumTalentTabs()) or 0
 	for tab = 1, tabs do
@@ -1479,7 +1462,6 @@ function WA.TalentInfo(wanted, wantedTab, wantedTier, wantedColumn)
 end
 
 function WA.PetBehavior()
-	if not GetPetActionInfo then return nil, nil end
 	local slots = NUM_PET_ACTION_SLOTS or 10
 	for index = 1, slots do
 		local name, _, texture, token, active = GetPetActionInfo(index)
@@ -1652,17 +1634,15 @@ end
 
 
 function WA.ConditionGroupType()
-	if GetNumRaidMembers and (GetNumRaidMembers() or 0) > 0 then return "raid" end
-	if GetNumPartyMembers and (GetNumPartyMembers() or 0) > 0 then return "party" end
+	if IsInRaid() then return "raid" end
+	if IsInGroup() then return "party" end
 	return "solo"
 end
 
 function WA.ConditionInstanceType()
-	if not IsInInstance then return "none" end
-	local inside, raw = IsInInstance()
-	if not inside then return "none" end
-	if raw == "party" then return "dungeon" end
-	return raw or "none"
+	local _, instanceType = GetInstanceInfo()
+	if instanceType == "party" then return "dungeon" end
+	return instanceType
 end
 
 local function conditionValueArg(name, display, values, labels, init)
@@ -1709,13 +1689,13 @@ PROTOTYPES["conditions"] = {
 		conditionStatusArg("alwaystrue", "Always Active", "true"),
 		conditionStatusArg("incombat", "In Combat", "UnitAffectingCombat(\"player\") and true or false"),
 		conditionStatusArg("alive", "Alive", "(not UnitIsDeadOrGhost(\"player\")) and true or false"),
-		conditionStatusArg("onTaxi", "On Taxi", "(UnitOnTaxi and UnitOnTaxi(\"player\")) and true or false"),
-		conditionStatusArg("resting", "Resting", "(IsResting and IsResting()) and true or false"),
-		conditionStatusArg("mounted", "Mounted", "(IsMounted and IsMounted()) and true or false"),
+		conditionStatusArg("onTaxi", "On Taxi", "UnitOnTaxi(\"player\") and true or false"),
+		conditionStatusArg("resting", "Resting", "IsResting() and true or false"),
+		conditionStatusArg("mounted", "Mounted", "IsMounted() and true or false"),
 		conditionStatusArg("hasPet", "Has Pet", "(UnitExists(\"pet\") and not UnitIsDeadOrGhost(\"pet\")) and true or false"),
-		conditionStatusArg("isMoving", "Is Moving", "((GetUnitSpeed and GetUnitSpeed(\"player\")) or 0) > 0"),
-		conditionStatusArg("afk", "AFK", "(UnitIsAFK and UnitIsAFK(\"player\")) and true or false"),
-		conditionStatusArg("pvpFlagged", "PvP Flagged", "((UnitIsPVP and UnitIsPVP(\"player\")) or (UnitIsPVPFreeForAll and UnitIsPVPFreeForAll(\"player\"))) and true or false"),
+		conditionStatusArg("isMoving", "Is Moving", "(GetUnitSpeed(\"player\") or 0) > 0"),
+		conditionStatusArg("afk", "AFK", "UnitIsAFK(\"player\") and true or false"),
+		conditionStatusArg("pvpFlagged", "PvP Flagged", "(UnitIsPVP(\"player\") or (UnitIsPVPFreeForAll(\"player\"))) and true or false"),
 		conditionValueArg("groupType", "Group Type", { "solo", "party", "raid" }, CONDITION_VALUE_LABELS.groupType, "WeakestAuras.ConditionGroupType()"),
 		conditionValueArg("instanceType", "Instance Type", { "none", "dungeon", "raid", "pvp", "arena" }, CONDITION_VALUE_LABELS.instanceType, "WeakestAuras.ConditionInstanceType()"),
 	},
@@ -1752,12 +1732,9 @@ PROTOTYPES["location"] = {
 		WA.MultiSelectMigrateGate(trigger, "instanceTypeFilter")
 	end,
 	init = function()
-		return "local zoneValue = (GetRealZoneText and GetRealZoneText()) or (GetZoneText and GetZoneText()) or \"\"\n"
-			.. "local subzoneValue = (GetSubZoneText and GetSubZoneText()) or \"\"\n"
-			.. "local instanceNameValue, _, _, _, instanceTypeValue\n"
-			.. "if GetInstanceInfo then instanceNameValue, _, _, _, instanceTypeValue = GetInstanceInfo() end\n"
-			.. "instanceNameValue = instanceNameValue or \"\"\n"
-			.. "instanceTypeValue = instanceTypeValue or \"none\""
+		return "local zoneValue = GetRealZoneText() or GetZoneText() or \"\"\n"
+			.. "local subzoneValue = GetSubZoneText() or \"\"\n"
+			.. "local instanceNameValue, instanceTypeValue = GetInstanceInfo()"
 	end,
 	args = {
 		{ name = "zone", type = "hidden", display = "Zone", init = "zoneValue", store = true, conditionType = "string" },
@@ -1800,8 +1777,8 @@ PROTOTYPES["money"] = {
 	init = function()
 		return "local money = GetMoney() or 0\n"
 			.. "local gold = math.floor(money / 10000)\n"
-			.. "local silver = math.mod(math.floor(money / 100), 100)\n"
-			.. "local copper = math.mod(money, 100)"
+			.. "local silver = math.fmod(math.floor(money / 100), 100)\n"
+			.. "local copper = math.fmod(money, 100)"
 	end,
 	args = {
 		{ name = "money", type = "hidden", required = true, init = "money",
@@ -1871,7 +1848,7 @@ PROTOTYPES["queuedaction"] = {
 	init = function(trigger)
 		local id = WA.ResolveSpellID(trigger.spellName) or 0
 		return "local spellId = " .. fmt(id) .. "\n"
-			.. "local queuedValue = C_Spell and C_Spell.IsCurrentSpell and C_Spell.IsCurrentSpell(spellId) and true or false"
+			.. "local queuedValue = C_Spell.IsCurrentSpell(spellId) and true or false"
 	end,
 	args = {
 		{ name = "spellName", type = "spell", display = "Spell", required = true },
@@ -1999,7 +1976,7 @@ PROTOTYPES["health"] = {
 		-- it so a build without it can't error the whole compiled test. Refreshes
 		-- on this prototype's health events, not on movement -- a condition var, not
 		-- a real-time range gate.
-		{ name = "inRange", type = "hidden", init = "((UnitInRange and UnitInRange(unit)) and true or false)",
+		{ name = "inRange", type = "hidden", init = "(UnitInRange(unit) and true or false)",
 			store = true, conditionType = "bool", display = "In Range" },
 		{ name = "ignoreDead", type = "toggle", display = "Ignore Dead",
 			test = function(t) return t.ignoreDead and "(not UnitIsDead(unit))" or nil end },
@@ -2156,8 +2133,8 @@ PROTOTYPES["spellcooldown"] = {
 			.. "local remaining = (expirationTime > 0 and (expirationTime - GetTime())) or 0\n"
 			.. "local onCooldown = " .. ON_COOLDOWN_EXPR .. " and true or false\n"
 			.. "local name, _, icon = GetSpellInfo(spellId)\n"
-			.. "local spellUsable, insufficientResources = false, false\n"
-			.. "if IsUsableSpell then local _u, _m = IsUsableSpell(spellId) spellUsable = _u and true or false insufficientResources = _m and true or false end\n"
+			.. "local spellUsable, insufficientResources = IsUsableSpell(spellId)\n"
+			.. "spellUsable, insufficientResources = spellUsable and true or false, insufficientResources and true or false\n"
 			.. "local spellInRange = WeakestAuras.SpellInRange(spellId)\n"
 			.. "local spellKnown = WeakestAuras.SpellIsKnown(spellId)"
 	end,
@@ -2271,9 +2248,9 @@ local EQUIP_SLOT_DEFS = {
 	{ key = "WaistSlot", label = "Waist" },
 }
 local EQUIP_SLOT_IDS, EQUIP_SLOT_LABELS = {}, {}
-for i = 1, table.getn(EQUIP_SLOT_DEFS) do
+for i = 1, #EQUIP_SLOT_DEFS do
 	local def = EQUIP_SLOT_DEFS[i]
-	local slotId = GetInventorySlotInfo and GetInventorySlotInfo(def.key)
+	local slotId = GetInventorySlotInfo(def.key)
 	if slotId then
 		table.insert(EQUIP_SLOT_IDS, slotId)
 		EQUIP_SLOT_LABELS[slotId] = def.label
@@ -2299,7 +2276,7 @@ PROTOTYPES["equipslotcooldown"] = {
 	icon = "Interface\\Icons\\INV_Misc_Bag_09",
 	iconFunc = function(trigger)
 		local slot = trigger.itemSlot
-		local link = slot and GetInventoryItemLink and GetInventoryItemLink("player", slot)
+		local link = slot and GetInventoryItemLink("player", slot)
 		local _, ic = itemNameIcon(link)
 		return ic or "Interface\\Icons\\INV_Misc_Bag_09"
 	end,
@@ -2319,9 +2296,9 @@ PROTOTYPES["equipslotcooldown"] = {
 			.. "local expirationTime = (startTime and duration and (startTime + duration)) or 0\n"
 			.. "local remaining = (expirationTime > 0 and (expirationTime - GetTime())) or 0\n"
 			.. "local onCooldown = " .. ON_COOLDOWN_EXPR .. " and true or false\n"
-			.. "local itemId = GetInventoryItemID and GetInventoryItemID(\"player\", itemSlot) or nil\n"
+			.. "local itemId = GetInventoryItemID(\"player\", itemSlot) or nil\n"
 			.. "local name = itemId and C_Item.GetItemInfo(itemId) or nil\n"
-			.. "local icon = GetInventoryItemTexture and GetInventoryItemTexture(\"player\", itemSlot) or nil"
+			.. "local icon = GetInventoryItemTexture(\"player\", itemSlot) or nil"
 	end,
 	args = {
 		{ name = "itemSlot", type = "select", required = true, display = "Slot",
@@ -2407,15 +2384,8 @@ end
 -- read as passive until something else happened to re-evaluate the trigger.
 local function itemHasUseSpell(itemId)
 	if not itemId or itemId == 0 then return false end
-	if C_Item and C_Item.GetItemSpell then
-		local spellName, spellId = C_Item.GetItemSpell(itemId)
-		return (spellId and spellId > 0) or (spellName and spellName ~= "")
-	end
-	if GetItemSpell then
-		local spellName = GetItemSpell(itemId)
-		return spellName and spellName ~= ""
-	end
-	return false
+	local spellName, spellId = C_Item.GetItemSpell(itemId)
+	return (spellId and spellId > 0) or (spellName and spellName ~= "")
 end
 WA.ItemHasUseSpell = itemHasUseSpell
 
@@ -2505,7 +2475,7 @@ PROTOTYPES["equipslotcooldownready"] = {
 	icon = "Interface\\Icons\\INV_Misc_Bag_09",
 	iconFunc = function(trigger)
 		local slot = trigger.itemSlot
-		local link = slot and GetInventoryItemLink and GetInventoryItemLink("player", slot)
+		local link = slot and GetInventoryItemLink("player", slot)
 		local _, icon = itemNameIcon(link)
 		return icon or "Interface\\Icons\\INV_Misc_Bag_09"
 	end,
@@ -2515,11 +2485,11 @@ PROTOTYPES["equipslotcooldownready"] = {
 			.. "local startTime, duration = WeakestAuras.EquipSlotCdInfo(cooldownKey, false)\n"
 			.. "local expirationTime = (startTime and duration and (startTime + duration)) or 0\n"
 			.. "local itemSlot = cooldownKey\n"
-			.. "local item = GetInventoryItemID and GetInventoryItemID(\"player\", cooldownKey)\n"
+			.. "local item = GetInventoryItemID(\"player\", cooldownKey)\n"
 			.. "local hasUseSpell = WeakestAuras.ItemHasUseSpell(item)\n"
 			.. "local ready = (cooldownKey ~= 0 and hasUseSpell) and (duration == nil or duration <= 0 or expirationTime <= GetTime())\n"
 			.. "local name = item and C_Item.GetItemInfo(item) or nil\n"
-			.. "local icon = GetInventoryItemTexture and GetInventoryItemTexture(\"player\", cooldownKey) or nil"
+			.. "local icon = GetInventoryItemTexture(\"player\", cooldownKey) or nil"
 	end,
 	args = cooldownReadyArgs("Equipment", {
 		name = "itemSlot", type = "select", required = true, display = "Equipment Slot",
@@ -2579,11 +2549,9 @@ PROTOTYPES["actionusable"] = {
 	},
 }
 
--- Cast/channel progress (player/target), polled -- ClassicAPI's C_Spell.
--- Unit/ChannelInfo only cover a unit's own cast reliably by polling; this client
--- has no combat log to track an arbitrary caster from. SuperWoW's UNIT_CASTEVENT
--- would extend this to any GUID with real payload -- a separate extension point.
--- Both C_Spell calls return several values positionally; captured through
+-- Cast/channel progress for any unit token. ClassicAPI's UNIT_SPELLCAST_* events
+-- say when to re-read; C_Spell.UnitCastingInfo/UnitChannelInfo say what is
+-- being cast. Both C_Spell calls return several values positionally; captured through
 -- named throwaway locals first and reassigned, rather than destructured
 -- directly into the final names, so the two different return shapes
 -- (UnitCastingInfo has castID at position 7, UnitChannelInfo doesn't) can't
@@ -2593,19 +2561,16 @@ PROTOTYPES["cast"] = {
 	wa2Event = "Cast",
 	category = "unit",
 	progressType = "timed",
-	-- Vanilla's arg-less SPELLCAST_* only reports the player's own casts; the
-	-- ClassicAPI UNIT_SPELLCAST_* layer carries arg1 = the casting unit and is
-	-- what makes any unit but the player -- and every member of a multi-unit
-	-- family -- report a cast at all. Only the six all-unit events are listed:
-	-- DELAYED/FAILED/CHANNEL_UPDATE are player-only there and already covered.
+	-- The six all-unit events, plus the player-only pushback pair so the bar
+	-- re-reads its end time. FAILED is left out: a started cast that fails also
+	-- fires STOP.
 	events = function(trigger)
 		return appendUnitChangeEvents(trigger,
-			appendMultiUnitEvents(trigger, { "SPELLCAST_START", "SPELLCAST_STOP",
-				"SPELLCAST_CHANNEL_START", "SPELLCAST_CHANNEL_STOP", "SPELLCAST_FAILED",
-				"SPELLCAST_INTERRUPTED",
+			appendMultiUnitEvents(trigger, {
 				"UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_SUCCEEDED",
 				"UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_CHANNEL_START",
-				"UNIT_SPELLCAST_CHANNEL_STOP" }), "player")
+				"UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_SPELLCAST_DELAYED",
+				"UNIT_SPELLCAST_CHANNEL_UPDATE" }), "player")
 	end,
 	force_events = true,
 	statesParameter = "unit",
@@ -2614,13 +2579,9 @@ PROTOTYPES["cast"] = {
 	nameFunc = function(trigger) return "Cast (" .. (WA.MultiUnitFamily(trigger) or WA.TriggerUnit(trigger, "player")) .. ")" end,
 	init = function(trigger)
 		return multiUnitInit(trigger, "player") .. "\n"
-			.. "local castName, castIcon, startMs, endMs, notInterruptible, castingSpellID\n"
-			.. "if C_Spell and C_Spell.UnitCastingInfo then\n"
-			.. "\tlocal _n, _d, _i, _s, _e, _t, _c, _ni, _sid = C_Spell.UnitCastingInfo(unit)\n"
-			.. "\tcastName, castIcon, startMs, endMs, notInterruptible, castingSpellID = _n, _i, _s, _e, _ni, _sid\n"
-			.. "end\n"
+			.. "local castName, _, castIcon, startMs, endMs, _, _, notInterruptible, castingSpellID = C_Spell.UnitCastingInfo(unit)\n"
 			.. "local chanName, chanIcon, chanStartMs, chanEndMs, chanNotInterruptible, chanSpellID\n"
-			.. "if not castName and C_Spell and C_Spell.UnitChannelInfo then\n"
+			.. "if not castName then\n"
 			.. "\tlocal _n2, _d2, _i2, _s2, _e2, _t2, _ni2, _sid2 = C_Spell.UnitChannelInfo(unit)\n"
 			.. "\tchanName, chanIcon, chanStartMs, chanEndMs, chanNotInterruptible, chanSpellID = _n2, _i2, _s2, _e2, _ni2, _sid2\n"
 			.. "end\n"
@@ -2662,17 +2623,13 @@ PROTOTYPES["cast"] = {
 -- configured window and takes itself back down (autoHide) rather than waiting
 -- for an event that says the cast stopped being true.
 --
--- Nampower's SPELL_GO_SELF is the signal, through the shared dispatch above.
--- SuperWoW's UNIT_CASTEVENT also reports completed casts and covers *every*
--- unit, but it fires a CAST for spells the player never chose -- procs and
--- companion ids land alongside the real one -- whereas SPELL_GO_SELF is exactly
--- the player's own cast. Hence: your casts only, and no unit arg.
+-- The player's UNIT_SPELLCAST_SUCCEEDED is the signal, through the shared
+-- dispatch below. Your casts only, and no unit arg.
 PROTOTYPES["castsucceeded"] = {
 	displayName = "Spell Cast Succeeded",
 	wa2Event = "Spell Cast Succeeded",
 	category = "spell",
 	autoHide = true,
-	enable = function() return WA.hasNampower end,
 	events = function() return { "WA_SPELL_CAST_SUCCEEDED" } end,
 	loadFunc = function() WA.WatchSpellCast() end,
 	icon = "Interface\\Icons\\Spell_Holy_MagicalSentry",
@@ -2759,11 +2716,492 @@ PROTOTYPES["chatmessage"] = {
 			store = true, conditionType = "string" },
 		{ name = "destName", type = "string", display = "Destination Name", init = "arg5",
 			store = true, conditionType = "string" },
+		-- ClassicAPI's arg12, "" for monster, system and GM lines; stored as nil there.
+		{ name = "sourceGUID", type = "hidden", init = "arg12 ~= '' and arg12 or nil", store = true },
 		{ name = "use_cloneId", type = "toggle", display = "Clone per Event", default = false },
 		{ name = "duration", type = "range", display = "Show For (s)",
 			min = 0.5, max = 10, step = 0.5, default = 1 },
 	},
 }
+
+-- Combat Log: one subevent of COMBAT_LOG_EVENT_UNFILTERED, filtered on the
+-- fields that subevent carries (upstream's "Combat Log" event trigger). The
+-- prefix and suffix choose the subevent, and dispatch applies it through the
+-- same subevent filter a custom trigger's CLEU:SUBEVENT sets, so the compiled
+-- test runs only for matching events. Settings and stored fields keep
+-- upstream's names, so an imported Combat Log trigger lands as written.
+--
+-- The payload is read with CombatLogGetCurrentEventInfo inside the compiled
+-- function rather than off arg1..arg9: a combat log event carries up to
+-- twenty-four values and the dispatch signature stops at nine. The positions
+-- after the eleven shared values depend on the subevent (ClassicAPI docs, the
+-- prefix and suffix tables), and the subevent is fixed per trigger, so the
+-- layout is resolved at compile time and the init binds each position to its
+-- field name. Every field name is declared whether or not this subevent fills
+-- it, so a store compiled against any of them reads a defined (nil) value.
+do -- scoped; see the local-ceiling note in the file header
+
+-- Prefixes that take a suffix. Any other prefix is a whole subevent on its own
+-- (UNIT_DIED, DAMAGE_SHIELD), and a suffix left in the config from an earlier
+-- choice is ignored rather than appended.
+local CLEU_ACTUAL_PREFIXES = { SWING = true, RANGE = true, SPELL = true,
+	SPELL_PERIODIC = true, ENVIRONMENTAL = true }
+
+-- Only what this client's combat log fires: no SPELL_BUILDING, UNIT_DISSIPATES,
+-- ENCHANT_*, _ABSORBED, _STOLEN or _AURA_BROKEN*. importCheck below refuses an
+-- import naming one of those rather than compiling a trigger that never fires.
+local CLEU_PREFIX_VALUES = { "SWING", "RANGE", "SPELL", "SPELL_PERIODIC", "ENVIRONMENTAL",
+	"DAMAGE_SHIELD", "DAMAGE_SPLIT", "DAMAGE_SHIELD_MISSED", "PARTY_KILL", "UNIT_DIED", "UNIT_DESTROYED" }
+local CLEU_PREFIX_LABELS = { SWING = "Swing", RANGE = "Range", SPELL = "Spell",
+	SPELL_PERIODIC = "Periodic Spell", ENVIRONMENTAL = "Environmental",
+	DAMAGE_SHIELD = "Damage Shield", DAMAGE_SPLIT = "Damage Split",
+	DAMAGE_SHIELD_MISSED = "Damage Shield Missed", PARTY_KILL = "Party Kill",
+	UNIT_DIED = "Unit Died", UNIT_DESTROYED = "Unit Destroyed" }
+local CLEU_SUFFIX_VALUES = { "_DAMAGE", "_MISSED", "_HEAL", "_ENERGIZE", "_DRAIN", "_LEECH",
+	"_INTERRUPT", "_DISPEL", "_DISPEL_FAILED", "_EXTRA_ATTACKS",
+	"_AURA_APPLIED", "_AURA_REMOVED", "_AURA_APPLIED_DOSE", "_AURA_REMOVED_DOSE", "_AURA_REFRESH",
+	"_CAST_START", "_CAST_SUCCESS", "_CAST_FAILED", "_INSTAKILL",
+	"_DURABILITY_DAMAGE", "_DURABILITY_DAMAGE_ALL", "_CREATE", "_SUMMON", "_RESURRECT" }
+local CLEU_SUFFIX_LABELS = { _DAMAGE = "Damage", _MISSED = "Missed", _HEAL = "Heal",
+	_ENERGIZE = "Energize", _DRAIN = "Drain", _LEECH = "Leech", _INTERRUPT = "Interrupt",
+	_DISPEL = "Dispel", _DISPEL_FAILED = "Dispel Failed", _EXTRA_ATTACKS = "Extra Attacks",
+	_AURA_APPLIED = "Aura Applied", _AURA_REMOVED = "Aura Removed",
+	_AURA_APPLIED_DOSE = "Aura Applied Dose", _AURA_REMOVED_DOSE = "Aura Removed Dose",
+	_AURA_REFRESH = "Aura Refresh", _CAST_START = "Cast Start", _CAST_SUCCESS = "Cast Success",
+	_CAST_FAILED = "Cast Failed", _INSTAKILL = "Instakill",
+	_DURABILITY_DAMAGE = "Durability Damage", _DURABILITY_DAMAGE_ALL = "Durability Damage All",
+	_CREATE = "Create", _SUMMON = "Summon", _RESURRECT = "Resurrect" }
+
+-- The subevent a trigger is configured for, or nil while the choice is
+-- incomplete -- which leaves the trigger inert, as upstream's is.
+local function cleuSubevent(trigger)
+	local prefix = trigger.subeventPrefix
+	if not prefix or not CLEU_PREFIX_LABELS[prefix] then return nil end
+	if not CLEU_ACTUAL_PREFIXES[prefix] then return prefix end
+	local suffix = trigger.subeventSuffix
+	if not suffix or not CLEU_SUFFIX_LABELS[suffix] then return nil end
+	return prefix .. suffix
+end
+
+-- The field names behind the payload positions. A prefix that is a whole
+-- subevent shares the layout of the suffix it stands for.
+local CLEU_SPELL_PREFIX = { "spellId", "spellName", "spellSchool" }
+local CLEU_ENVIRONMENTAL_PREFIX = { "environmentalType" }
+local CLEU_SUFFIX_FIELDS = {
+	_DAMAGE = { "amount", "overkill", "school", "resisted", "blocked", "absorbed",
+		"critical", "glancing", "crushing", "isOffHand" },
+	_MISSED = { "missType", "isOffHand", "amountMissed" },
+	_HEAL = { "amount", "overhealing", "absorbed", "critical" },
+	_ENERGIZE = { "amount", "powerType" },
+	_DRAIN = { "amount", "powerType", "extraAmount" },
+	_LEECH = { "amount", "powerType", "extraAmount" },
+	_CAST_FAILED = { "failedType" },
+	_INTERRUPT = { "extraSpellId", "extraSpellName", "extraSchool" },
+	_DISPEL_FAILED = { "extraSpellId", "extraSpellName", "extraSchool" },
+	_DISPEL = { "extraSpellId", "extraSpellName", "extraSchool", "auraType" },
+	_EXTRA_ATTACKS = { "number" },
+	_AURA_APPLIED = { "auraType" },
+	_AURA_REMOVED = { "auraType" },
+	_AURA_REFRESH = { "auraType" },
+	_AURA_APPLIED_DOSE = { "auraType", "number" },
+	_AURA_REMOVED_DOSE = { "auraType", "number" },
+}
+-- Values the log leaves nil for zero, and the 1-or-nil flags, normalized so a
+-- number test and a bool condition read them directly.
+local CLEU_ZERO_FIELDS = { resisted = true, blocked = true, absorbed = true }
+local CLEU_FLAG_FIELDS = { critical = true, glancing = true, crushing = true, isOffHand = true }
+
+-- Every field name, for the one `local` line that declares them all.
+local CLEU_ALL_FIELDS = {}
+do
+	local seen = {}
+	local function collect(fields)
+		for i = 1, #fields do
+			if not seen[fields[i]] then
+				seen[fields[i]] = true
+				table.insert(CLEU_ALL_FIELDS, fields[i])
+			end
+		end
+	end
+	collect(CLEU_SPELL_PREFIX)
+	collect(CLEU_ENVIRONMENTAL_PREFIX)
+	for _, fields in pairs(CLEU_SUFFIX_FIELDS) do collect(fields) end
+end
+
+-- (prefixFields, suffixKey) for the trigger's subevent.
+local function cleuLayout(trigger)
+	local prefix = trigger.subeventPrefix
+	if prefix == "SPELL" or prefix == "SPELL_PERIODIC" or prefix == "RANGE" then
+		return CLEU_SPELL_PREFIX, trigger.subeventSuffix
+	elseif prefix == "SWING" then
+		return nil, trigger.subeventSuffix
+	elseif prefix == "ENVIRONMENTAL" then
+		return CLEU_ENVIRONMENTAL_PREFIX, trigger.subeventSuffix
+	elseif prefix == "DAMAGE_SHIELD" or prefix == "DAMAGE_SPLIT" then
+		return CLEU_SPELL_PREFIX, "_DAMAGE"
+	elseif prefix == "DAMAGE_SHIELD_MISSED" then
+		return CLEU_SPELL_PREFIX, "_MISSED"
+	end
+	return nil, nil
+end
+
+-- An enable predicate: does the trigger's subevent carry this field.
+local function cleuCarries(name)
+	return function(trigger)
+		local prefixFields, suffixKey = cleuLayout(trigger)
+		for i = 1, #(prefixFields or {}) do
+			if prefixFields[i] == name then return true end
+		end
+		local suffixFields = suffixKey and CLEU_SUFFIX_FIELDS[suffixKey] or {}
+		for i = 1, #suffixFields do
+			if suffixFields[i] == name then return true end
+		end
+		return false
+	end
+end
+
+-- Subevents with no source or no target (ClassicAPI docs), whose filters on
+-- that side would match nothing.
+local CLEU_SOURCELESS = { ENVIRONMENTAL = true, UNIT_DIED = true, UNIT_DESTROYED = true }
+local function cleuHasSource(trigger)
+	return not CLEU_SOURCELESS[trigger.subeventPrefix or ""]
+end
+local function cleuHasDest(trigger)
+	local _, suffixKey = cleuLayout(trigger)
+	return suffixKey ~= "_CAST_START"
+end
+
+-- Upstream's CheckCombatLogFlags family, called from the generated test. The
+-- COMBATLOG_OBJECT_* bits, by their upstream filter names. `flags` is nil on
+-- the options preview and for an event with no unit on that side, which fails
+-- every check.
+local CLEU_AFFILIATION_MASKS = { Mine = 1, InParty = 2, InGroup = 7, NotInGroup = 8 }
+local CLEU_REACTION_MASKS = { Friendly = 16, Neutral = 32, Hostile = 64 }
+local CLEU_OBJECT_TYPE_MASKS = { Player = 1024, NPC = 2048, Pet = 4096, Guardian = 8192, Object = 16384 }
+local function flagsMatch(masks)
+	return function(flags, want)
+		local mask = masks[want]
+		return type(flags) == "number" and mask ~= nil and bit.band(flags, mask) ~= 0
+	end
+end
+WA.CheckCombatLogFlags = flagsMatch(CLEU_AFFILIATION_MASKS)
+WA.CheckCombatLogFlagsReaction = flagsMatch(CLEU_REACTION_MASKS)
+WA.CheckCombatLogFlagsObjectType = flagsMatch(CLEU_OBJECT_TYPE_MASKS)
+
+-- Raid marks by upstream's index: 0 none, 1..8 star..skull, 9 any mark.
+local CLEU_RAID_MARK_BITS = { 1, 2, 4, 8, 16, 32, 64, 128 }
+function WA.CheckRaidFlags(flags, want)
+	want = tonumber(want)
+	if type(flags) ~= "number" or not want then return false end
+	local marks = bit.band(flags, 255)
+	if want == 0 then return marks == 0 end
+	if want == 9 then return marks ~= 0 end
+	local mark = CLEU_RAID_MARK_BITS[want]
+	return mark ~= nil and bit.band(flags, mark) ~= 0
+end
+function WA.RaidFlagToIndex(flags)
+	if type(flags) ~= "number" then return 0 end
+	for i = 1, 8 do
+		if bit.band(flags, CLEU_RAID_MARK_BITS[i]) ~= 0 then return i end
+	end
+	return 0
+end
+
+-- A unit's NPC ID as a string, which is how upstream stores and compares it:
+-- nil for a player, an object or no unit at all.
+function WA.CreatureIdString(guid)
+	local id = guid and C_CreatureInfo.GetCreatureID(guid)
+	return id and tostring(id) or nil
+end
+
+local CLEU_NPC_TOOLTIP = {
+	title = "NPC IDs",
+	lines = { "Matches a unit whose NPC ID is any entry here.",
+		"Start an entry with - to exclude that NPC instead: a list of only exclusions matches everyone else, players included." },
+}
+
+local CLEU_AFFILIATION_VALUES = { "Mine", "InParty", "InGroup", "NotInGroup" }
+local CLEU_AFFILIATION_LABELS = { Mine = "Mine", InParty = "In Party", InGroup = "In Group",
+	NotInGroup = "Not in Group" }
+local CLEU_REACTION_VALUES = { "Hostile", "Neutral", "Friendly" }
+local CLEU_REACTION_LABELS = { Hostile = "Hostile", Neutral = "Neutral", Friendly = "Friendly" }
+local CLEU_OBJECT_TYPE_VALUES = { "Player", "NPC", "Pet", "Guardian", "Object" }
+local CLEU_OBJECT_TYPE_LABELS = { Player = "Player", NPC = "NPC", Pet = "Pet",
+	Guardian = "Guardian", Object = "Object" }
+local CLEU_RAID_MARK_VALUES = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 }
+local CLEU_RAID_MARK_LABELS = { [0] = "None", [1] = "Star", [2] = "Circle", [3] = "Diamond",
+	[4] = "Triangle", [5] = "Moon", [6] = "Square", [7] = "Cross", [8] = "Skull", [9] = "Any" }
+-- Single-school masks, labelled with the client's localized school names.
+-- Shared with the crowd-control prototype's interrupt-school select.
+WA.SCHOOL_VALUES = { 1, 2, 4, 8, 16, 32, 64 }
+WA.SCHOOL_LABELS = {}
+for _, mask in ipairs(WA.SCHOOL_VALUES) do WA.SCHOOL_LABELS[mask] = C_Spell.GetSchoolString(mask) end
+local CLEU_MISS_VALUES = { "MISS", "RESIST", "DODGE", "PARRY", "BLOCK", "EVADE", "IMMUNE",
+	"DEFLECT", "ABSORB", "REFLECT" }
+local CLEU_MISS_LABELS = { MISS = "Miss", RESIST = "Resist", DODGE = "Dodge", PARRY = "Parry",
+	BLOCK = "Block", EVADE = "Evade", IMMUNE = "Immune", DEFLECT = "Deflect", ABSORB = "Absorb",
+	REFLECT = "Reflect" }
+local CLEU_AURA_TYPE_VALUES = { "BUFF", "DEBUFF" }
+local CLEU_AURA_TYPE_LABELS = { BUFF = "Buff", DEBUFF = "Debuff" }
+-- Upstream's spelling; the init rewrites the log's "DROWNING" to match.
+local CLEU_ENVIRONMENT_VALUES = { "Drowning", "Falling", "Fatigue", "Fire", "Lava", "Slime" }
+local CLEU_ENVIRONMENT_LABELS = { Drowning = "Drowning", Falling = "Falling", Fatigue = "Fatigue",
+	Fire = "Fire", Lava = "Lava", Slime = "Slime" }
+local CLEU_POWER_VALUES = { 0, 1, 2, 3 }
+local CLEU_POWER_LABELS = { [0] = "Mana", [1] = "Rage", [2] = "Focus", [3] = "Energy" }
+
+-- The source and destination unit dropdowns: the single tokens without
+-- `specific`, whose free-text field is one per trigger and could not serve two
+-- units at once.
+local CLEU_UNIT_TOKENS, CLEU_UNIT_SET = {}, {}
+for i = 1, #WA.unit_tokens do
+	local token = WA.unit_tokens[i]
+	if token ~= "specific" then
+		table.insert(CLEU_UNIT_TOKENS, token)
+		CLEU_UNIT_SET[token] = true
+	end
+end
+
+-- Tests for the gated filters whose auto-generated comparison would be wrong:
+-- a unit matches by GUID, flags by mask.
+local function cleuUnitTest(name, guidVar)
+	return function(trigger)
+		if not trigger["use_" .. name] then return nil end
+		return guidVar .. " ~= nil and " .. guidVar .. " == UnitGUID(" .. fmt(trigger[name] or "player") .. ")"
+	end
+end
+local function cleuFlagTest(name, checker, flagsVar)
+	return function(trigger)
+		if not trigger["use_" .. name] then return nil end
+		return "WeakestAuras." .. checker .. "(" .. flagsVar .. ", " .. fmt(trigger[name]) .. ")"
+	end
+end
+local function cleuSourceUnitOn(trigger) return cleuHasSource(trigger) and trigger.use_sourceUnit end
+local function cleuDestUnitOn(trigger) return cleuHasDest(trigger) and trigger.use_destUnit end
+
+PROTOTYPES["combatlog"] = {
+	displayName = "Combat Log",
+	wa2Event = "Combat Log",
+	category = "event",
+	eventMode = true,
+	autoHide = true,
+	-- Spell ID and Spell Name were saved as one value in `spellId` / `spellName`
+	-- with an `_operator` beside it, which no other trigger writes -- so the
+	-- operator is what tells such a save from a key another type left behind,
+	-- which stays untouched for a switch back.
+	migrate = function(trigger)
+		for _, key in ipairs({ "spellId", "spellName" }) do
+			if trigger[key .. "_operator"] ~= nil then
+				local value = trigger[key]
+				if trigger[key .. "List"] == nil then
+					trigger[key .. "List"] = (value ~= nil and value ~= "") and { tostring(value) } or {}
+					trigger["use_" .. key .. "List"] = trigger["use_" .. key] and true or false
+				end
+				trigger[key], trigger["use_" .. key], trigger[key .. "_operator"] = nil, nil, nil
+			end
+		end
+	end,
+	events = function() return { "COMBAT_LOG_EVENT_UNFILTERED" } end,
+	subevents = function(trigger)
+		local subevent = cleuSubevent(trigger)
+		if subevent then return { [subevent] = true } end
+		return {}
+	end,
+	icon = "Interface\\Icons\\Ability_Warrior_SavageBlow",
+	iconFunc = function() return "Interface\\Icons\\Ability_Warrior_SavageBlow" end,
+	nameFunc = function(trigger) return cleuSubevent(trigger) or "Combat Log" end,
+	init = function(trigger)
+		local prefixFields, suffixKey = cleuLayout(trigger)
+		local lines = {
+			"local timestamp, subevent, hideCaster, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,"
+				.. " destGUID, destName, destFlags, destRaidFlags,"
+				.. " p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13 = CombatLogGetCurrentEventInfo()",
+			"local " .. table.concat(CLEU_ALL_FIELDS, ", "),
+		}
+		local pos = 1
+		local function bind(fields)
+			for i = 1, #fields do
+				local field = fields[i]
+				table.insert(lines, field .. " = p" .. pos)
+				pos = pos + 1
+				if CLEU_ZERO_FIELDS[field] then
+					table.insert(lines, field .. " = " .. field .. " or 0")
+				elseif CLEU_FLAG_FIELDS[field] then
+					table.insert(lines, field .. " = " .. field .. " and true or false")
+				end
+			end
+		end
+		if prefixFields then bind(prefixFields) end
+		local suffixFields = suffixKey and CLEU_SUFFIX_FIELDS[suffixKey]
+		if suffixFields then bind(suffixFields) end
+		if prefixFields == CLEU_ENVIRONMENTAL_PREFIX then
+			table.insert(lines, "if environmentalType then environmentalType = string.upper(string.sub(environmentalType, 1, 1))"
+				.. " .. string.lower(string.sub(environmentalType, 2)) end")
+		end
+		table.insert(lines, "local icon")
+		table.insert(lines, "if spellId and spellId ~= 0 then local _, _, tex = GetSpellInfo(spellId); icon = tex end")
+		return table.concat(lines, "\n")
+	end,
+	-- The prefix and suffix are matched by the subevent filter in dispatch, not
+	-- here; their tests contribute nothing.
+	args = {
+		{ name = "subeventPrefix", type = "select", required = true, display = "Message Prefix",
+			valueList = CLEU_PREFIX_VALUES, valueLabels = CLEU_PREFIX_LABELS, default = "SPELL",
+			reloadOptions = true, test = function() return nil end },
+		{ name = "subeventSuffix", type = "select", required = true, display = "Message Suffix",
+			valueList = CLEU_SUFFIX_VALUES, valueLabels = CLEU_SUFFIX_LABELS, default = "_DAMAGE",
+			enable = function(trigger) return CLEU_ACTUAL_PREFIXES[trigger.subeventPrefix or ""] == true end,
+			reloadOptions = true, test = function() return nil end },
+
+		{ name = "use_sourceUnit", type = "toggle", display = "Source Unit", reloadOptions = true,
+			enable = cleuHasSource },
+		{ name = "sourceUnit", type = "unit", display = "Source Unit",
+			valueList = CLEU_UNIT_TOKENS, valueLabels = WA.unit_labels,
+			enable = cleuSourceUnitOn, test = cleuUnitTest("sourceUnit", "sourceGUID") },
+		{ name = "sourceName", type = "string", display = "Source Name", enable = cleuHasSource,
+			store = true, conditionType = "string" },
+		{ name = "sourceNpcId", type = "list", listNegate = true, display = "Source NPC ID",
+			listLabel = "Source NPC IDs (any match)", tooltip = CLEU_NPC_TOOLTIP,
+			init = "WeakestAuras.CreatureIdString(sourceGUID)", enable = cleuHasSource,
+			store = true, conditionType = "string" },
+		{ name = "sourceFlags", type = "select", display = "Source Affiliation",
+			valueList = CLEU_AFFILIATION_VALUES, valueLabels = CLEU_AFFILIATION_LABELS,
+			enable = cleuHasSource, test = cleuFlagTest("sourceFlags", "CheckCombatLogFlags", "sourceFlags") },
+		{ name = "sourceFlags2", type = "select", display = "Source Reaction",
+			valueList = CLEU_REACTION_VALUES, valueLabels = CLEU_REACTION_LABELS,
+			enable = cleuHasSource, test = cleuFlagTest("sourceFlags2", "CheckCombatLogFlagsReaction", "sourceFlags") },
+		{ name = "sourceFlags3", type = "select", display = "Source Object Type",
+			valueList = CLEU_OBJECT_TYPE_VALUES, valueLabels = CLEU_OBJECT_TYPE_LABELS,
+			enable = cleuHasSource, test = cleuFlagTest("sourceFlags3", "CheckCombatLogFlagsObjectType", "sourceFlags") },
+		{ name = "sourceRaidFlags", type = "select", display = "Source Raid Mark",
+			valueList = CLEU_RAID_MARK_VALUES, valueLabels = CLEU_RAID_MARK_LABELS,
+			enable = cleuHasSource, test = cleuFlagTest("sourceRaidFlags", "CheckRaidFlags", "sourceRaidFlags") },
+		{ name = "sourceGUID", type = "hidden", store = true, conditionType = "string",
+			display = "Source GUID", enable = cleuHasSource },
+		{ name = "sourceRaidMarkIndex", type = "hidden", init = "WeakestAuras.RaidFlagToIndex(sourceRaidFlags)",
+			store = true, conditionType = "number", display = "Source Raid Mark Index", enable = cleuHasSource },
+		{ name = "sourceRaidMark", type = "hidden",
+			init = "sourceRaidMarkIndex > 0 and ('{rt' .. sourceRaidMarkIndex .. '}') or ''",
+			store = true, conditionType = "string", display = "Source Raid Mark Texture", enable = cleuHasSource },
+
+		{ name = "use_destUnit", type = "toggle", display = "Destination Unit", reloadOptions = true,
+			enable = cleuHasDest },
+		{ name = "destUnit", type = "unit", display = "Destination Unit",
+			valueList = CLEU_UNIT_TOKENS, valueLabels = WA.unit_labels,
+			enable = cleuDestUnitOn, test = cleuUnitTest("destUnit", "destGUID") },
+		{ name = "destName", type = "string", display = "Destination Name", enable = cleuHasDest,
+			store = true, conditionType = "string" },
+		{ name = "destNpcId", type = "list", listNegate = true, display = "Destination NPC ID",
+			listLabel = "Destination NPC IDs (any match)", tooltip = CLEU_NPC_TOOLTIP,
+			init = "WeakestAuras.CreatureIdString(destGUID)", enable = cleuHasDest,
+			store = true, conditionType = "string" },
+		{ name = "destFlags", type = "select", display = "Destination Affiliation",
+			valueList = CLEU_AFFILIATION_VALUES, valueLabels = CLEU_AFFILIATION_LABELS,
+			enable = cleuHasDest, test = cleuFlagTest("destFlags", "CheckCombatLogFlags", "destFlags") },
+		{ name = "destFlags2", type = "select", display = "Destination Reaction",
+			valueList = CLEU_REACTION_VALUES, valueLabels = CLEU_REACTION_LABELS,
+			enable = cleuHasDest, test = cleuFlagTest("destFlags2", "CheckCombatLogFlagsReaction", "destFlags") },
+		{ name = "destFlags3", type = "select", display = "Destination Object Type",
+			valueList = CLEU_OBJECT_TYPE_VALUES, valueLabels = CLEU_OBJECT_TYPE_LABELS,
+			enable = cleuHasDest, test = cleuFlagTest("destFlags3", "CheckCombatLogFlagsObjectType", "destFlags") },
+		{ name = "destRaidFlags", type = "select", display = "Destination Raid Mark",
+			valueList = CLEU_RAID_MARK_VALUES, valueLabels = CLEU_RAID_MARK_LABELS,
+			enable = cleuHasDest, test = cleuFlagTest("destRaidFlags", "CheckRaidFlags", "destRaidFlags") },
+		{ name = "destGUID", type = "hidden", store = true, conditionType = "string",
+			display = "Destination GUID", enable = cleuHasDest },
+		{ name = "destRaidMarkIndex", type = "hidden", init = "WeakestAuras.RaidFlagToIndex(destRaidFlags)",
+			store = true, conditionType = "number", display = "Destination Raid Mark Index", enable = cleuHasDest },
+		{ name = "destRaidMark", type = "hidden",
+			init = "destRaidMarkIndex > 0 and ('{rt' .. destRaidMarkIndex .. '}') or ''",
+			store = true, conditionType = "string", display = "Destination Raid Mark Texture", enable = cleuHasDest },
+
+		-- The filters are lists under their own keys: `spellName` and `spellId`
+		-- hold a single spell on the cooldown triggers, and a trigger keeps its
+		-- keys across a type switch, so a list there would reach code reading one.
+		{ name = "spellIdList", type = "list", listNumeric = true, listVar = "spellId",
+			display = "Spell ID", listLabel = "Spell IDs (any match)", enable = cleuCarries("spellId") },
+		{ name = "spellId", type = "hidden", enable = cleuCarries("spellId"),
+			store = true, conditionType = "number", display = "Spell ID" },
+		{ name = "spellNameList", type = "list", listVar = "spellName",
+			display = "Spell Name", listLabel = "Spell Names (any match)", enable = cleuCarries("spellName") },
+		{ name = "spellName", type = "hidden", enable = cleuCarries("spellName"),
+			store = true, conditionType = "string", display = "Spell Name" },
+		{ name = "spellSchool", type = "select", display = "Spell School",
+			valueList = WA.SCHOOL_VALUES, valueLabels = WA.SCHOOL_LABELS,
+			enable = cleuCarries("spellSchool"), store = true, conditionType = "number" },
+		{ name = "environmentalType", type = "select", display = "Environment Type",
+			valueList = CLEU_ENVIRONMENT_VALUES, valueLabels = CLEU_ENVIRONMENT_LABELS,
+			enable = cleuCarries("environmentalType"), store = true, conditionType = "string" },
+		{ name = "missType", type = "select", display = "Miss Type",
+			valueList = CLEU_MISS_VALUES, valueLabels = CLEU_MISS_LABELS,
+			enable = cleuCarries("missType"), store = true, conditionType = "string" },
+		{ name = "extraSpellId", type = "number", display = "Extra Spell ID", operator = "==",
+			enable = cleuCarries("extraSpellId"), store = true, conditionType = "number" },
+		{ name = "extraSpellName", type = "string", display = "Extra Spell Name",
+			enable = cleuCarries("extraSpellName"), store = true, conditionType = "string" },
+		{ name = "extraSchool", type = "select", display = "Extra School",
+			valueList = WA.SCHOOL_VALUES, valueLabels = WA.SCHOOL_LABELS,
+			enable = cleuCarries("extraSchool"), store = true, conditionType = "number" },
+		{ name = "auraType", type = "select", display = "Aura Type",
+			valueList = CLEU_AURA_TYPE_VALUES, valueLabels = CLEU_AURA_TYPE_LABELS,
+			enable = cleuCarries("auraType"), store = true, conditionType = "string" },
+		{ name = "amount", type = "number", display = "Amount",
+			enable = cleuCarries("amount"), store = true, conditionType = "number" },
+		{ name = "overkill", type = "number", display = "Overkill",
+			enable = cleuCarries("overkill"), store = true, conditionType = "number" },
+		{ name = "overhealing", type = "number", display = "Overhealing",
+			enable = cleuCarries("overhealing"), store = true, conditionType = "number" },
+		{ name = "school", type = "select", display = "School",
+			valueList = WA.SCHOOL_VALUES, valueLabels = WA.SCHOOL_LABELS,
+			enable = cleuCarries("school"), store = true, conditionType = "number" },
+		{ name = "resisted", type = "number", display = "Resisted",
+			enable = cleuCarries("resisted"), store = true, conditionType = "number" },
+		{ name = "blocked", type = "number", display = "Blocked",
+			enable = cleuCarries("blocked"), store = true, conditionType = "number" },
+		{ name = "absorbed", type = "number", display = "Absorbed",
+			enable = cleuCarries("absorbed"), store = true, conditionType = "number" },
+		{ name = "critical", type = "tristate", display = "Critical",
+			enable = cleuCarries("critical"), store = true, conditionType = "bool" },
+		{ name = "glancing", type = "tristate", display = "Glancing",
+			enable = cleuCarries("glancing"), store = true, conditionType = "bool" },
+		{ name = "crushing", type = "tristate", display = "Crushing",
+			enable = cleuCarries("crushing"), store = true, conditionType = "bool" },
+		{ name = "isOffHand", type = "tristate", display = "Is Off Hand",
+			enable = cleuCarries("isOffHand"), store = true, conditionType = "bool" },
+		{ name = "number", type = "number", display = "Number",
+			enable = cleuCarries("number"), store = true, conditionType = "number" },
+		{ name = "powerType", type = "select", display = "Power Type",
+			valueList = CLEU_POWER_VALUES, valueLabels = CLEU_POWER_LABELS,
+			enable = cleuCarries("powerType"), store = true, conditionType = "number" },
+		{ name = "extraAmount", type = "number", display = "Extra Amount",
+			enable = cleuCarries("extraAmount"), store = true, conditionType = "number" },
+
+		{ name = "use_cloneId", type = "toggle", display = "Clone per Event", default = false },
+		{ name = "duration", type = "range", display = "Show For (s)",
+			min = 0.5, max = 10, step = 0.5, default = 1 },
+		{ name = "icon", type = "hidden", store = true },
+	},
+	-- Settings an import can carry that this client cannot honour: a subevent
+	-- its log never fires, or a unit token the dropdowns do not offer.
+	importCheck = function(trigger)
+		local prefix, suffix = trigger.subeventPrefix, trigger.subeventSuffix
+		if prefix ~= nil and not CLEU_PREFIX_LABELS[prefix] then
+			return "uses subevent prefix " .. tostring(prefix) .. ", which this client never fires"
+		end
+		if prefix ~= nil and CLEU_ACTUAL_PREFIXES[prefix] and suffix ~= nil and not CLEU_SUFFIX_LABELS[suffix] then
+			return "uses subevent " .. prefix .. tostring(suffix) .. ", which this client never fires"
+		end
+		if trigger.use_sourceUnit and not CLEU_UNIT_SET[trigger.sourceUnit or ""] then
+			return "uses source unit " .. tostring(trigger.sourceUnit) .. ", which this trigger does not offer"
+		end
+		if trigger.use_destUnit and not CLEU_UNIT_SET[trigger.destUnit or ""] then
+			return "uses destination unit " .. tostring(trigger.destUnit) .. ", which this trigger does not offer"
+		end
+		return nil
+	end,
+}
+
+end -- combatlog
 
 -- Status bool: has the player learned this spell. IsSpellKnown is a native
 -- global taking a numeric spellID (3.3.5 semantics).
@@ -2788,7 +3226,7 @@ PROTOTYPES["spellknown"] = {
 	end,
 	init = function(trigger)
 		return "local spellId = " .. fmt(WA.ResolveSpellID(trigger.spellName) or 0) .. "\n"
-			.. "local known = (IsSpellKnown and IsSpellKnown(spellId)) and true or false"
+			.. "local known = IsSpellKnown(spellId) and true or false"
 	end,
 	args = {
 		{ name = "spellName", type = "spell", display = "Spell" },
@@ -2805,7 +3243,6 @@ PROTOTYPES["spellknown"] = {
 -- rather than from GetShapeshiftForm(), which no addon on this client is known
 -- to call.
 function WA.ShapeshiftBarIndex()
-	if not (GetShapeshiftFormInfo and GetNumShapeshiftForms) then return 0 end
 	for i = 1, GetNumShapeshiftForms() do
 		local _, _, active = GetShapeshiftFormInfo(i)
 		if active then return i end
@@ -2816,7 +3253,7 @@ end
 -- The bar's slots and their captions, both from one walk.
 function WA.ShapeshiftForms()
 	local values, labels = { 0 }, { [0] = "0 - No Form" }
-	for i = 1, ((GetNumShapeshiftForms and GetNumShapeshiftForms()) or 0) do
+	for i = 1, GetNumShapeshiftForms() do
 		table.insert(values, i)
 		local _, name = GetShapeshiftFormInfo(i)
 		labels[i] = i .. " - " .. (name or "Form " .. i)
@@ -2846,7 +3283,7 @@ PROTOTYPES["stance"] = {
 		-- one term. With no form filter set it is `true`, so an inverted trigger
 		-- with nothing selected shows never -- upstream's reading of the pair.
 		local match = multiSelectSource(trigger, "form", "form") or "true"
-		return "local formId = (GetShapeshiftFormID and GetShapeshiftFormID()) or 0\n"
+		return "local formId = GetShapeshiftFormID() or 0\n"
 			.. "local inForm = formId ~= 0\n"
 			.. "local form = WeakestAuras.ShapeshiftBarIndex()\n"
 			.. "local formMatch = (" .. match .. ")"
@@ -2922,7 +3359,7 @@ PROTOTYPES["itemequipped"] = {
 	end,
 	init = function(trigger)
 		return "local itemRef = " .. fmt(trigger.itemName or "") .. "\n"
-			.. "local equipped = (C_Item and C_Item.IsEquippedItem and itemRef ~= \"\" and C_Item.IsEquippedItem(itemRef)) and true or false"
+			.. "local equipped = (itemRef ~= \"\" and C_Item.IsEquippedItem(itemRef)) and true or false"
 	end,
 	args = {
 		{ name = "itemName", type = "item", display = "Item" },
@@ -2956,7 +3393,7 @@ local fallbackItemClasses = {
 	[15] = "Miscellaneous",
 }
 for classID = 0, 15 do
-	local label = C_Item and C_Item.GetItemClassInfo and C_Item.GetItemClassInfo(classID)
+	local label = C_Item.GetItemClassInfo(classID)
 	if not label or label == "" then label = fallbackItemClasses[classID] end
 	if label then
 		table.insert(ITEM_CLASS_IDS, classID)
@@ -2964,8 +3401,7 @@ for classID = 0, 15 do
 		ITEM_SUBCLASS_IDS[classID] = {}
 		ITEM_SUBCLASS_LABELS[classID] = {}
 		for subclassID = 0, 31 do
-			local subclass = C_Item and C_Item.GetItemSubClassInfo and
-				C_Item.GetItemSubClassInfo(classID, subclassID)
+			local subclass = C_Item.GetItemSubClassInfo(classID, subclassID)
 			if subclass and subclass ~= "" then
 				table.insert(ITEM_SUBCLASS_IDS[classID], subclassID)
 				ITEM_SUBCLASS_LABELS[classID][subclassID] = subclass
@@ -2977,7 +3413,7 @@ end
 function itemSubclassValues(classID)
 	local ids = ITEM_SUBCLASS_IDS[tonumber(classID) or -1]
 	local labels = ITEM_SUBCLASS_LABELS[tonumber(classID) or -1]
-	if ids and table.getn(ids) > 0 then return ids, labels end
+	if ids and #ids > 0 then return ids, labels end
 	return { 0 }, { [0] = "Unknown" }
 end
 
@@ -3150,8 +3586,7 @@ PROTOTYPES["unitcharacteristics"] = {
 		return multiUnitInit(trigger, "target") .. "\n"
 			.. "local unitName = UnitName(unit)\n"
 			.. "local level = UnitLevel(unit) or 0\n"
-			.. "local classFile, classId\n"
-			.. "if UnitClassBase then classFile, classId = UnitClassBase(unit) end\n"
+			.. "local classFile, classId = UnitClassBase(unit)\n"
 			.. "local creatureType = UnitCreatureType(unit) or \"\"\n"
 			.. "local classification = UnitClassification(unit) or \"\"\n"
 			.. "local isPlayer = UnitIsPlayer(unit) and true or false\n"
@@ -3236,7 +3671,7 @@ PROTOTYPES["combopoints"] = {
 	iconFunc = function() return "Interface\\Icons\\Ability_Rogue_Eviscerate" end,
 	nameFunc = function() return "Combo Points" end,
 	init = function()
-		return "local comboPoints = (GetComboPoints and GetComboPoints(\"player\", \"target\")) or 0\n"
+		return "local comboPoints = GetComboPoints(\"player\", \"target\") or 0\n"
 			.. "local maxComboPoints = 5\n"
 			.. "local percentComboPoints = comboPoints / maxComboPoints * 100\n"
 			.. "local comboPointDeficit = maxComboPoints - comboPoints"
@@ -3278,7 +3713,7 @@ PROTOTYPES["weaponenchant"] = {
 		return "local weapon = " .. fmt(trigger.weapon or "main") .. "\n"
 			.. "local has, expirationTime, duration, enchantId = WeakestAuras.WeaponEnchantInfo(weapon)\n"
 			.. "local name = \"Weapon Enchant\"\n"
-			.. "if enchantId and C_Item and C_Item.GetEnchantInfo then local ei = C_Item.GetEnchantInfo(enchantId) if ei and ei.name then name = ei.name end end\n"
+			.. "if enchantId then local ei = C_Item.GetEnchantInfo(enchantId) if ei and ei.name then name = ei.name end end\n"
 			.. "local icon = WeakestAuras.WeaponEnchantIcon(weapon, enchantId)\n"
 			.. "local remaining = (expirationTime > 0 and (expirationTime - GetTime())) or 0"
 	end,
@@ -3366,9 +3801,9 @@ PROTOTYPES["experience"] = {
 	iconFunc = function() return "Interface\\Icons\\INV_Misc_Note_01" end,
 	nameFunc = function() return "Experience" end,
 	init = function()
-		return "local xp = (UnitXP and UnitXP(\"player\")) or 0\n"
-			.. "local xpMax = (UnitXPMax and UnitXPMax(\"player\")) or 0\n"
-			.. "local restedXP = (GetXPExhaustion and GetXPExhaustion()) or 0\n"
+		return "local xp = UnitXP(\"player\") or 0\n"
+			.. "local xpMax = UnitXPMax(\"player\") or 0\n"
+			.. "local restedXP = GetXPExhaustion() or 0\n"
 			.. "local xpPercent = (xpMax > 0) and (xp / xpMax * 100) or 0"
 	end,
 	args = {
@@ -3506,33 +3941,62 @@ PROTOTYPES["charstats"] = {
 	},
 }
 
--- Crowd control on the player, timed progress. Debuff scan (WA.ScanPlayerCC)
--- against the bundled category table -- ClassicAPI-only, no combat log or
--- Nampower needed, and player-unit aura timing is the reliable case. Optional
--- category filter; name/icon/expiration drive the display. WA_SLOW_TICK flips it
--- off at expiry; UNIT_AURA catches a new/removed debuff immediately.
+-- Loss of control on the player, timed progress. Upstream's "Crowd Controlled":
+-- the first matching C_LossOfControl effect, re-read on LOSS_OF_CONTROL_UPDATE,
+-- which ClassicAPI fires when an effect is added, falls off or expires. The type
+-- and school options are baked into init's call rather than tested afterwards,
+-- since they choose which effect is reported, not whether the one found passes.
 PROTOTYPES["crowdcontrol"] = {
 	displayName = "Crowd Control",
 	wa2Event = "Crowd Controlled",
 	category = "unit",
 	progressType = "timed",
-	events = function() return { "UNIT_AURA", "PLAYER_AURAS_CHANGED", "WA_SLOW_TICK" } end,
+	events = function() return { "LOSS_OF_CONTROL_UPDATE" } end,
 	force_events = true,
-	loadFunc = function() WA.EnsureSlowTick() end,
+	-- The category filter this trigger was saved with before it read
+	-- C_LossOfControl. Root, Silence and Disarm are one control type each; CC
+	-- (stuns, fears, incapacitates) has no single equivalent and Snare is not a
+	-- loss of control at all, so both fall back to any type.
+	migrate = function(trigger)
+		if trigger.category == nil then return end
+		local mapped = ({ Root = "ROOT", Silence = "SILENCE", Disarm = "DISARM" })[trigger.category]
+		if mapped and trigger.controlType == nil then
+			trigger.controlType = mapped
+			trigger.use_controlType = trigger.use_category
+		end
+		trigger.category, trigger.use_category = nil, nil
+	end,
 	icon = "Interface\\Icons\\Spell_Nature_Polymorph",
 	iconFunc = function() return "Interface\\Icons\\Spell_Nature_Polymorph" end,
 	nameFunc = function() return "Crowd Control" end,
-	init = function()
-		return "local active, category, name, icon, expirationTime, duration = WeakestAuras.ScanPlayerCC()"
+	init = function(trigger)
+		local controlType = trigger.use_controlType and trigger.controlType or nil
+		local schoolMask = controlType == "SCHOOL_INTERRUPT" and trigger.use_interruptSchool
+			and tonumber(trigger.interruptSchool) or nil
+		return "local active, locType, spellId, name, icon, expirationTime, duration, lockoutSchool = WeakestAuras.PlayerLossOfControl("
+			.. fmt(controlType) .. ", " .. fmt(schoolMask) .. ")"
 	end,
 	args = {
-		{ name = "active", type = "hidden", required = true, test = "active",
-			store = true, conditionType = "bool", display = "Under Control" },
-		{ name = "category", type = "select", display = "Category",
-			valueList = { "CC", "Silence", "Disarm", "Root", "Snare" },
-			test = function(t) return t.use_category and ("(category == " .. fmt(t.category) .. ")") or nil end },
+		{ name = "controlType", type = "select", display = "Specific Type",
+			valueList = { "STUN", "FEAR", "ROOT", "CONFUSE", "CHARM", "POSSESS", "SILENCE",
+				"PACIFY", "PACIFYSILENCE", "DISARM", "SCHOOL_INTERRUPT" },
+			valueLabels = { STUN = "Stun", FEAR = "Fear", ROOT = "Root", CONFUSE = "Confuse",
+				CHARM = "Charm", POSSESS = "Possess", SILENCE = "Silence", PACIFY = "Pacify",
+				PACIFYSILENCE = "Pacify and Silence", DISARM = "Disarm",
+				SCHOOL_INTERRUPT = "Interrupt" },
+			reloadOptions = true, test = function() return nil end },
+		{ name = "interruptSchool", type = "select", display = "Interrupt School",
+			valueList = WA.SCHOOL_VALUES, valueLabels = WA.SCHOOL_LABELS,
+			default = 4, test = function() return nil end,
+			enable = function(trigger) return trigger.use_controlType and trigger.controlType == "SCHOOL_INTERRUPT" end },
+		{ name = "inverse", type = "toggle", display = "Inverse" },
+		{ name = "active", type = "hidden", required = true, store = true, conditionType = "bool", display = "Under Control",
+			test = function(trigger) return trigger.inverse and "not active" or "active" end },
+		{ name = "locType", type = "hidden", store = true, conditionType = "string", display = "Control Type" },
+		{ name = "spellId", type = "hidden", store = true, conditionType = "number", display = "Spell ID" },
 		{ name = "name", type = "hidden", store = true, conditionType = "string", display = "Spell Name" },
 		{ name = "icon", type = "hidden", store = true },
+		{ name = "lockoutSchool", type = "hidden", store = true, conditionType = "string", display = "Interrupted School" },
 		{ name = "expirationTime", type = "hidden", store = true, conditionType = "timer", display = "Remaining Time" },
 		{ name = "duration", type = "hidden", store = true, conditionType = "number", display = "Duration" },
 	},
@@ -3542,13 +4006,10 @@ PROTOTYPES["crowdcontrol"] = {
 -- selected by `rangeMode`:
 --   "unit"     -- UnitInRange: a real ~40yd position check (ClassicAPI), the
 --                 same primitive the spell-cooldown/health prototypes expose.
---   "interact" -- CheckInteractDistance(unit, index): coarse native bands, the
---                 ONLY way to detect short/melee range here (inspect ~28 /
---                 trade ~11 / duel ~10 / follow ~28 yd -- index 3 is the
---                 melee-ish band UnitInRange's 40yd can't resolve).
---   "spell"    -- WA.SpellInRange: SpellHasRange-gated UnitInRange for a named
---                 spell (exact per-spell range would need SuperWoW SpellInfo +
---                 UnitPosition -- an opt-in refinement, not wired here).
+--   "interact" -- CheckInteractDistance(unit, index): coarse native bands
+--                 (inspect ~28 / trade ~11 / duel ~10 / follow ~28 yd -- index
+--                 3 is the melee-ish band UnitInRange's 40yd can't resolve).
+--   "spell"    -- WA.SpellInRange: the engine's range check for a named spell.
 -- Range changes with movement and there's no movement event, so it leans on
 -- WA_FAST_TICK's 0.1s cadence to re-poll (plus a target swap) -- smooth enough
 -- for a live distance readout. `distance` is the center-to-center yards from
@@ -3718,13 +4179,10 @@ PROTOTYPES["threat"] = {
 	},
 }
 
--- Totem in a given element slot, timed progress. No GetTotemInfo on 1.12; the
--- totem watcher (below) emulates it from a bundled spellID->duration DB + a
--- Nampower SPELL_GO_SELF drop signal. Per-slot default icon/name are
--- compile-time constants; the live totem's name/icon come from the watcher's
--- stores and win via activateEvent. Early-destroyed totems (killed, or the slot
--- overwritten) aren't detected mid-life beyond WA_SLOW_TICK expiry +
--- PLAYER_DEAD clear -- same limitation as the pfUI/CallOfElements refs.
+-- Totem in a given element slot, timed progress, off ClassicAPI's GetTotemInfo.
+-- PLAYER_TOTEM_UPDATE covers drops, recalls, deaths and expiry; WA_SLOW_TICK
+-- only keeps the Remaining Time test current. The totem's name is nil until the
+-- client sees the creature, and the update event fires again when it does.
 do -- scoped; see the local-ceiling note in the file header
 
 local TOTEM_SLOT_LABELS = { [1] = "Fire", [2] = "Earth", [3] = "Water", [4] = "Air" }
@@ -3739,19 +4197,17 @@ PROTOTYPES["totem"] = {
 	wa2Event = "Totem",
 	category = "spell",
 	progressType = "timed",
-	events = function() return { "WA_TOTEM_UPDATE", "WA_SLOW_TICK", "PLAYER_ENTERING_WORLD" } end,
+	events = function() return { "PLAYER_TOTEM_UPDATE", "WA_SLOW_TICK", "PLAYER_ENTERING_WORLD" } end,
 	force_events = true,
-	loadFunc = function() WA.WatchTotems(); WA.EnsureSlowTick() end,
+	loadFunc = function() WA.EnsureSlowTick() end,
 	icon = "Interface\\Icons\\Spell_Nature_SearingTotem",
 	migrate = function(trigger) renameArg(trigger, "totemSlot", "totemType") end,
 	iconFunc = function(trigger) return TOTEM_SLOT_ICONS[trigger.totemType or 1] or "Interface\\Icons\\Spell_Nature_SearingTotem" end,
 	nameFunc = function(trigger) return (TOTEM_SLOT_LABELS[trigger.totemType or 1] or "Totem") .. " Totem" end,
 	init = function(trigger)
 		return "local totemType = " .. fmt(trigger.totemType or 1) .. "\n"
-			.. "local active, name, icon, startTime, duration = WeakestAuras.TotemInfo(totemType)\n"
-			.. "active = active and true or false\n"
-			.. "startTime = startTime or 0\n"
-			.. "duration = duration or 0\n"
+			.. "local _, name, startTime, duration, icon = GetTotemInfo(totemType)\n"
+			.. "local active = startTime > 0\n"
 			.. "local expirationTime = (startTime > 0 and duration > 0) and (startTime + duration) or 0\n"
 			.. "local remaining = (expirationTime > 0 and (expirationTime - GetTime())) or 0"
 	end,
@@ -3770,15 +4226,11 @@ PROTOTYPES["totem"] = {
 
 end -- totem prototype
 
--- Swing timer, timed progress per weapon hand. Full port of pfUI's
--- modules/swingtimer.lua: the watcher (below) maintains each hand's swing
--- start/duration off Nampower's AUTO_ATTACK_SELF reset + UnitAttackSpeed, the
--- Flurry proc-latency rescale, and the advanced grafts -- on-next-swing consume
--- (Heroic Strike/Cleave/Maul), the Slam/Hammer-of-Wrath clip warning,
--- ability-queue coloring, ranged bar, and parry haste. Those extras are
--- surfaced as condition variables (blocked/clipWarning/clipDelay/queuedAbility),
--- not a hardcoded bar tint -- the WA-idiomatic translation of pfUI's inline
--- rendering (see the watcher comment).
+-- Swing timer, timed progress per weapon hand. The watcher (below) maintains
+-- each hand's swing off ClassicAPI's PLAYER_SWING, plus pfUI's Flurry rescale,
+-- the Slam/Hammer-of-Wrath clip warning and the queued on-next-swing ability.
+-- Those extras are surfaced as condition variables
+-- (blocked/clipWarning/clipDelay/queuedAbility), not a hardcoded bar tint.
 PROTOTYPES["swing"] = {
 	displayName = "Swing Timer",
 	wa2Event = "Swing Timer",
@@ -3869,7 +4321,9 @@ PROTOTYPES["powertick"] = {
 
 -- spec: { pollRaw(key) -> start, duration, enabled; changedEvent, readyEvent;
 -- extraEvents = { ... } (pcall-registered on the watcher's own frame, e.g.
--- SPELL_UPDATE_COOLDOWN) }. Returns { Watch(key, wantTick), Info(key) }.
+-- SPELL_UPDATE_COOLDOWN); baseCooldown(key) -> the key's own cooldown in
+-- seconds, for the kinds that can answer it }. Returns { Watch(key, wantTick),
+-- Info(key) }.
 -- `cache` is what the API last said and `announced` is what subscribers were
 -- last told. They are separate on purpose: `cache` is refreshed on every read,
 -- so no trigger ever evaluates a stale window, and comparing a poll against
@@ -3877,6 +4331,67 @@ PROTOTYPES["powertick"] = {
 -- the change event every *other* aura on that key is owed.
 
 do -- scoped; see the local-ceiling note in the file header
+
+-- A window that is not the key's own cooldown: the global cooldown, and the
+-- ranged shot cadence, which this client reports the same way -- firing a wand
+-- locks every spell for one ranged swing, and that window's length is the
+-- weapon's speed, not 1.5s. Length alone cannot separate those from a real
+-- cooldown, since a 1.8s wand and a 1.8s cooldown read identically, so the
+-- key's own recovery time decides: a spell whose record carries no recovery has
+-- no cooldown of its own, and any window on it belongs to something else.
+local SHARED_MAX = 3.0    -- past any wand's swing, and short of every real cooldown in Spell.dbc
+local GCD_CEILING = 1.6   -- the 1.5s global cooldown, plus the slack a server's report lands in
+local gcdCeiling = GCD_CEILING
+local rangedCeiling, rangedStamp = 0, 0
+
+-- `base` is the key's own cooldown in seconds: 0 when it has none, nil when
+-- unknown, which is every key that is not a spell. A window is the key's own
+-- only if it is that length -- talents shorten a cooldown and nothing lengthens
+-- one, so a window longer than the record's is something passing over the key,
+-- and a shorter one at these lengths is the global cooldown or a shot.
+--
+-- Ordered for the hot path: every cooldown trigger runs this on every scan, so
+-- a real cooldown -- the common case by far -- exits on the first comparison,
+-- and the ranged read is reached only by a window too long to be a global
+-- cooldown and short enough to be a shot.
+local function isShared(duration, base)
+	if duration > SHARED_MAX then return false end
+	if duration > gcdCeiling then
+		local now = GetTime()
+		if now - rangedStamp > 1 then
+			rangedStamp = now
+			local speed = UnitRangedDamage and UnitRangedDamage("player")
+			rangedCeiling = (speed and speed > 0) and (speed + 0.1) or 0
+		end
+		if duration > rangedCeiling then return false end
+	end
+	if base == nil or base == 0 then return true end
+	return duration < base - 0.05 or duration > base + 0.05
+end
+
+-- The global cooldown's measured length, handed over by the watcher that learns
+-- it. Never lowers the ceiling below the 1.5s standard: a measurement short
+-- enough to do that came off something that was not a global cooldown, and it
+-- would take every spell whose own cooldown is shorter than one -- the stances,
+-- Shadowform -- down with it.
+function WA.SetGcdLength(length)
+	gcdCeiling = (length and length + 0.1 > GCD_CEILING) and (length + 0.1) or GCD_CEILING
+end
+
+-- The spell's own cooldown in seconds, from its Spell.dbc record: the longer of
+-- its own and its category's recovery, since most vanilla cooldowns are the
+-- category's (Fire Blast is category 19's 8s). 0 for an unknown spell.
+local function spellBaseCooldown(spellId)
+	if not (spellId and spellId > 0) then return 0 end
+	return (GetSpellBaseCooldown(spellId) or 0) / 1000
+end
+WA.SpellBaseCooldown = spellBaseCooldown
+
+-- Debug.lua's /wa cdprobe reads the verdict through this; the watchers call the
+-- local directly, which is the point of it being one.
+function WA.IsSharedCooldown(duration, base)
+	return (duration or 0) > 0 and isShared(duration, base)
+end
 
 local function newCooldownWatcher(spec)
 	local w = { keys = {}, tick = {}, cache = {}, announced = {}, frame = nil, ticker = nil }
@@ -3890,6 +4405,9 @@ local function newCooldownWatcher(spec)
 		local c = w.cache[key]
 		if not c then
 			c = {}
+			-- Read once per key: a spell record does not change under a session,
+			-- and this keeps the per-scan test down to two comparisons.
+			if spec.baseCooldown then c.base = spec.baseCooldown(key) end
 			w.cache[key] = c
 		end
 		c.start = start or 0
@@ -3916,11 +4434,11 @@ local function newCooldownWatcher(spec)
 			WA.ScanEvents(spec.changedEvent, key)
 		end
 		-- Schedule the ready flip for real cooldowns, so the display clears
-		-- exactly on time without relying on the ticker's cadence. A window no
-		-- longer than the global cooldown is skipped: it is the GCD passing over
-		-- the spell, not its own cooldown, and arming a timer for every one of
+		-- exactly on time without relying on the ticker's cadence. A shared
+		-- window is skipped: it is the global cooldown or a shot cadence passing
+		-- over the key, not its own cooldown, and arming a timer for every one of
 		-- those would mean a timer per watched key per cast.
-		if changed and running and not WA.IsGcdCooldown(c.duration) then
+		if changed and running and not isShared(c.duration, c.base) then
 			local remain = (c.start + c.duration) - GetTime()
 			if remain > 0 then
 				C_Timer.After(remain + 0.05, function()
@@ -3969,7 +4487,7 @@ local function newCooldownWatcher(spec)
 		-- Guarded: not every 1.12 build fires every one of these, and an unknown
 		-- event name would error the whole registration (risk (c), settle per
 		-- build with Debug.lua's /wa events pattern).
-		for i = 1, table.getn(spec.extraEvents or {}) do
+		for i = 1, #(spec.extraEvents or {}) do
 			pcall(w.frame.RegisterEvent, w.frame, spec.extraEvents[i])
 		end
 	end
@@ -3996,18 +4514,17 @@ local function newCooldownWatcher(spec)
 	-- force_events pass runs before loadFunc -- and keeps a read that arrives
 	-- between two polls current.
 	--
-	-- The global cooldown passes over every spell and item, so a window no longer
-	-- than the GCD is not a cooldown of this key's own and is reported as no
-	-- cooldown at all unless `showgcd` asks for it. That test belongs here rather
-	-- than in each prototype's generated code: every value a trigger derives --
-	-- duration, expirationTime, remaining, onCooldown, ready, usable -- comes off
-	-- this one read, and filtering per prototype is how they came to disagree.
-	-- Excluding is the default so a caller that omits the flag cannot leak.
-	-- pollKey reads w.cache directly and stays raw on purpose: it has to tell a
-	-- GCD window apart from an absent one to skip arming a ready timer for it.
+	-- The global cooldown and a wand's shot cadence pass over every spell and
+	-- item, so a window that is one of those is not a cooldown of this key's own
+	-- and is reported as no cooldown at all unless `showgcd` asks for it. That
+	-- test belongs here rather than in each prototype's generated code: every
+	-- value a trigger derives -- duration, expirationTime, remaining, onCooldown,
+	-- ready, usable -- comes off this one read, and filtering per prototype is
+	-- how they came to disagree. Excluding is the default so a caller that omits
+	-- the flag cannot leak.
 	local function info(key, showgcd)
 		local c = refresh(key)
-		if not showgcd and WA.IsGcdCooldown(c.duration) then return 0, 0, c.enabled end
+		if not showgcd and c.duration > 0 and isShared(c.duration, c.base) then return 0, 0, c.enabled end
 		return c.start, c.duration, c.enabled
 	end
 
@@ -4025,15 +4542,13 @@ end
 -- What this read depends on is the *identity* handed to it -- a spellID with no
 -- Spell.dbc row answers nil, and a rank other than the one actually cast has no
 -- cooldown of its own. That resolution is WA.ResolveSpellID's job, not this one's.
---
--- The start goes through WA.UnwrapTick: this is one of the two ClassicAPI reads
--- that hand back a signed-wrapped tick on a long-lived client.
 local spellCdWatch = newCooldownWatcher({
 	pollRaw = function(spellId)
-		local cdInfo = C_Spell and C_Spell.GetSpellCooldown and C_Spell.GetSpellCooldown(spellId)
+		local cdInfo = C_Spell.GetSpellCooldown(spellId)
 		if not cdInfo then return nil, nil, nil end
-		return WA.UnwrapTick(cdInfo.startTime), cdInfo.duration, cdInfo.isEnabled
+		return cdInfo.startTime, cdInfo.duration, cdInfo.isEnabled
 	end,
+	baseCooldown = spellBaseCooldown,
 	changedEvent = "SPELL_COOLDOWN_CHANGED",
 	readyEvent = "SPELL_COOLDOWN_READY",
 	extraEvents = { "SPELL_UPDATE_COOLDOWN", "SPELL_UPDATE_USABLE", "ACTIONBAR_UPDATE_COOLDOWN" },
@@ -4049,23 +4564,14 @@ function WA.SpellCdInfo(spellId, showgcd) return spellCdWatch.Info(spellId, show
 -- claim the spell is permanently off cooldown.
 function WA.SpellCdKnown(spellId)
 	if not spellId or spellId == 0 then return false end
-	if not (C_Spell and C_Spell.GetSpellCooldown) then return false end
 	return C_Spell.GetSpellCooldown(spellId) ~= nil
 end
 
--- GetItemCooldown returns (start, duration, enable) directly, not a table --
--- read behind an if-guard (not an `and`-chain) so all three values actually
--- propagate; `and`-chaining a multi-return call truncates it to one value on
--- this client's Lua 5.0.
---
--- The start goes through WA.UnwrapTick: this is the other ClassicAPI read that
--- hands back a signed-wrapped tick on a long-lived client. The equipment-slot
--- watcher below needs no such repair -- GetInventoryItemCooldown is vanilla's own.
+-- GetItemCooldown returns (start, duration, enable) directly, not a table.
 local itemCdWatch = newCooldownWatcher({
 	pollRaw = function(itemId)
-		if not GetItemCooldown then return 0, 0, false end
 		local start, duration, enable = GetItemCooldown(itemId)
-		return WA.UnwrapTick(start), duration, enable == 1
+		return start, duration, enable == 1
 	end,
 	changedEvent = "ITEM_COOLDOWN_CHANGED",
 	readyEvent = "ITEM_COOLDOWN_READY",
@@ -4078,7 +4584,6 @@ function WA.ItemCdInfo(itemId, showgcd) return itemCdWatch.Info(itemId, showgcd)
 -- backport), same (start, duration, enable) shape as GetItemCooldown.
 local equipCdWatch = newCooldownWatcher({
 	pollRaw = function(slot)
-		if not GetInventoryItemCooldown then return 0, 0, false end
 		local start, duration, enable = GetInventoryItemCooldown("player", slot)
 		return start, duration, enable == 1
 	end,
@@ -4118,16 +4623,6 @@ do -- scoped; see the local-ceiling note in the file header
 
 local threatCache = { exists = false }
 local threatFrame
-local function splitStr(s, sep)
-	local out, pos = {}, 1
-	while true do
-		local a, b = string.find(s, sep, pos, true)
-		if not a then table.insert(out, string.sub(s, pos)); break end
-		table.insert(out, string.sub(s, pos, a - 1))
-		pos = b + 1
-	end
-	return out
-end
 function WA.WatchThreat()
 	if threatFrame then return end
 
@@ -4141,7 +4636,7 @@ function WA.WatchThreat()
 			threat = meRow.threat, threatpct = meRow.perc, threatmax = 100,
 			melee = meRow.melee, isTanking = meRow.tank,
 			tankName = tankRow and tankRow.name, tankThreat = tankRow and tankRow.threat or 0,
-			unit = "target", guid = UnitGUID and UnitGUID("target") or nil,
+			unit = "target", guid = UnitGUID("target") or nil,
 			targetName = UnitName("target"),
 			rivalThreat = 0, threatDiff = 0, pullGap = 0, pullPct = 0,
 		}
@@ -4205,16 +4700,15 @@ function WA.WatchThreat()
 		local body = string.sub(arg2, e + 1)
 		local tm = string.find(body, "#", 1, true)
 		if tm then body = string.sub(body, 1, tm - 1) end
-		local players = splitStr(body, ";")
 		local me = UnitName("player")
 		local rows, count, meRow, tankRow = {}, 0, nil, nil
-		for i = 1, table.getn(players) do
-			local f = splitStr(players[i], ":")
-			if f[1] and f[2] and f[3] and f[4] and f[5] then
+		for player in string.gmatch(body, "[^;]+") do
+			local name, tank, threat, perc, melee = strsplit(":", player)
+			if melee then
 				count = count + 1
-				rows[count] = { name = f[1], tank = f[2] == "1", threat = tonumber(f[3]) or 0,
-					perc = tonumber(f[4]) or 0, melee = f[5] == "1" }
-				if f[1] == me then meRow = rows[count] end
+				rows[count] = { name = name, tank = tank == "1", threat = tonumber(threat) or 0,
+					perc = tonumber(perc) or 0, melee = melee == "1" }
+				if name == me then meRow = rows[count] end
 				if rows[count].tank then tankRow = rows[count] end
 			end
 		end
@@ -4257,8 +4751,7 @@ end
 -- nil when a query is worth making, else the clause that refused it.
 function WA.ThreatQueryRefusal()
 	if not threatTriggerLoaded() then return "no threat trigger is loaded" end
-	if not ((GetNumRaidMembers and GetNumRaidMembers() > 0)
-		or (GetNumPartyMembers and GetNumPartyMembers() > 0)) then
+	if not IsInGroup() then
 		return "not in a party or raid"
 	end
 	if not UnitExists("target") then return "no target" end
@@ -4327,7 +4820,7 @@ function WA.SendThreatQuery(limit)
 		if WA.OnThreatQuery then WA.OnThreatQuery(nil, why) end
 		return false, why
 	end
-	local channel = (GetNumRaidMembers and GetNumRaidMembers() > 0) and "RAID" or "PARTY"
+	local channel = IsInRaid() and "RAID" or "PARTY"
 	local msg = "limit=" .. (limit or THREAT_QUERY_LIMIT)
 	WA.SendAddonMessageThrottled(THREAT_QUERY_PREFIX, msg, channel)
 	noteOurRequest(GetTime())
@@ -4405,29 +4898,21 @@ end
 
 end -- threat watcher
 
--- Shared SPELL_GO_SELF dispatch: the totem and swing watchers both consume this
--- Nampower event (arg1 itemId, 0 for a real spell cast; arg2 spellId -- ref
--- DoiteAuras DoiteConditions.lua ~2270). Registered once and fanned out to
--- subscribers so the two watchers don't each stand up their own frame, and the
--- gating CVar is flipped once: Nampower hides SPELL_GO events behind
--- NP_EnableSpellGoEvents (default 0), enabled here the same guarded way
--- DoiteAuras does -- without it arg2/spellId never arrives.
-local spellGoSelfSubs = {}
-local spellGoSelfFrame
-local function subscribeSpellGoSelf(fn)
-	table.insert(spellGoSelfSubs, fn)
-	if spellGoSelfFrame then return end
-	if GetCVar and SetCVar then
-		local ok, v = pcall(GetCVar, "NP_EnableSpellGoEvents")
-		if ok and v and tostring(v) == "0" then pcall(SetCVar, "NP_EnableSpellGoEvents", "1") end
-	end
-	spellGoSelfFrame = CreateFrame("Frame")
-	pcall(spellGoSelfFrame.RegisterEvent, spellGoSelfFrame, "SPELL_GO_SELF")
-	spellGoSelfFrame:SetScript("OnEvent", function()
-		if arg1 and arg1 ~= 0 then return end -- item-triggered, not a real spell cast
-		local spellId = arg2
-		if not spellId then return end
-		for i = 1, table.getn(spellGoSelfSubs) do spellGoSelfSubs[i](spellId) end
+-- Shared dispatch for the player's completed casts: the GCD, swing and Cast
+-- Succeeded watchers all consume ClassicAPI's UNIT_SPELLCAST_SUCCEEDED (arg1
+-- unit, arg3 spellId), registered once and fanned out to subscribers. The event
+-- fans out once per token naming the caster, so only the "player" token counts.
+local castSucceededSubs = {}
+local castSucceededFrame
+local function subscribePlayerCastSucceeded(fn)
+	table.insert(castSucceededSubs, fn)
+	if castSucceededFrame then return end
+	castSucceededFrame = CreateFrame("Frame")
+	castSucceededFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+	castSucceededFrame:SetScript("OnEvent", function()
+		if arg1 ~= "player" then return end
+		local spellId = arg3
+		for i = 1, #castSucceededSubs do castSucceededSubs[i](spellId) end
 	end)
 end
 
@@ -4443,7 +4928,7 @@ end
 -- GetSpellCooldown(slot, BOOKTYPE_SPELL) answers a true start and duration in
 -- GetTime()'s epoch, and a slot whose spell has no cooldown of its own shows
 -- the global cooldown and nothing else. So the GCD is read off exactly one such
--- slot, learned from what the player actually casts -- after a SPELL_GO_SELF
+-- slot, learned from what the player actually casts -- after a completed cast
 -- the caster's own slot either reports a GCD-length window (a usable probe,
 -- remembered) or a longer one (the spell's own cooldown, keep looking).
 --
@@ -4455,8 +4940,12 @@ end
 
 do -- scoped; see the local-ceiling note in the file header
 
--- Longest window still attributable to the global cooldown. The GCD is 1.5s and
--- server latency lands the reported window slightly over it.
+-- The band a global cooldown can occupy. It is 1.5s, server latency lands the
+-- reported window slightly over it, and a rogue's is 1.0s. A window outside the
+-- band is something else -- a wand's shot cadence is the one that reaches here
+-- -- and latching it would shorten both this watcher's window and the ceiling
+-- the cooldown watchers filter against.
+local GCD_MIN = 0.9
 local GCD_MAX = 1.6
 local GCD_DEFAULT = 1.5
 
@@ -4491,10 +4980,18 @@ local function gcdBegin(start, duration)
 	WA.ScanEvents("GCD_UPDATE")
 end
 
+-- Accepts a window as a measurement of the global cooldown, and publishes the
+-- length to the cooldown watchers' filter.
+local function gcdMeasure(duration)
+	if not duration or duration < GCD_MIN or duration > GCD_MAX then return false end
+	gcd.measured = duration
+	WA.SetGcdLength(duration)
+	return true
+end
+
 local function gcdPoll()
 	local start, duration = WA.SpellSlotCooldown(gcd.probeSlot)
-	if start and duration and duration > 0 and duration <= GCD_MAX then
-		gcd.measured = duration
+	if start and gcdMeasure(duration) then
 		gcdBegin(start, duration)
 	elseif gcd.duration > 0 and (gcd.start + gcd.duration) <= GetTime() then
 		gcdEnd()
@@ -4502,20 +4999,25 @@ local function gcdPoll()
 end
 
 local function gcdOnCast(spellId)
+	-- Only spellbook casts: item uses and triggered spells land here too, and
+	-- neither starts the GCD. Nor does a ranged auto-attack, though Auto Shot and
+	-- Shoot are spellbook spells: each shot locks every spell for the weapon's
+	-- speed, which would read as a GCD on every wand shot.
+	if C_Spell.IsRangedAutoAttackSpell(spellId) then return end
+	local slot = WA.SpellSlotByID(spellId)
+	if not slot then return end
+
 	-- Open the window on the cast itself, so the trigger is live before any probe
 	-- slot has been learned and stays live for a caster whose own cooldown is
 	-- longer than the GCD (its slot can never serve as a probe).
 	gcdBegin(GetTime(), gcd.measured or GCD_DEFAULT)
 
-	local slot = WA.SpellSlotByID(spellId)
-	if not slot then return end
 	-- Read a frame later: the cooldown the server applied for this cast has not
-	-- landed on the slot at the instant SPELL_GO_SELF arrives.
+	-- landed on the slot at the instant UNIT_SPELLCAST_SUCCEEDED arrives.
 	C_Timer.After(0.05, function()
 		local start, duration = WA.SpellSlotCooldown(slot)
-		if start and duration and duration > 0 and duration <= GCD_MAX then
+		if start and gcdMeasure(duration) then
 			gcd.probeSlot = slot
-			gcd.measured = duration
 			gcdBegin(start, duration)
 		end
 	end)
@@ -4527,7 +5029,7 @@ function WA.WatchGCD()
 	gcdFrame = CreateFrame("Frame")
 	-- Guarded like every other event registration here (risk (c)).
 	local events = { "ACTIONBAR_UPDATE_COOLDOWN", "SPELL_UPDATE_COOLDOWN", "SPELLS_CHANGED", "LEARNED_SPELL_IN_TAB" }
-	for i = 1, table.getn(events) do pcall(gcdFrame.RegisterEvent, gcdFrame, events[i]) end
+	for i = 1, #events do pcall(gcdFrame.RegisterEvent, gcdFrame, events[i]) end
 	gcdFrame:SetScript("OnEvent", function()
 		if event == "SPELLS_CHANGED" or event == "LEARNED_SPELL_IN_TAB" then
 			-- Slot numbers shift as the book grows, so the shared index and the
@@ -4538,7 +5040,7 @@ function WA.WatchGCD()
 		end
 		gcdPoll()
 	end)
-	subscribeSpellGoSelf(gcdOnCast)
+	subscribePlayerCastSucceeded(gcdOnCast)
 end
 
 -- (start, duration, enabled) of the open window, or (0, 0, true) when none is.
@@ -4548,15 +5050,6 @@ end
 function WA.GcdInfo()
 	if gcd.duration > 0 and (gcd.start + gcd.duration) <= GetTime() then return 0, 0, true end
 	return gcd.start, gcd.duration, true
-end
-
--- True when a cooldown window is the global cooldown passing over a spell or
--- item rather than its own. Nothing distinguishes the two here but length, so
--- this is the measured GCD compared against -- GCD_DEFAULT only until a cast has
--- been measured, which is why it is not the literal 1.5 it replaced.
-function WA.IsGcdCooldown(duration)
-	if not duration or duration <= 0 then return false end
-	return duration <= (gcd.measured or GCD_DEFAULT) + 0.1
 end
 
 -- The watcher's internals, for Debug.lua's /wa gcd. Which slot it settled on and
@@ -4570,124 +5063,37 @@ end
 end -- global cooldown
 
 -- Re-emits the shared dispatch as an internal event carrying the spell id, so a
--- trigger reads the cast off the payload instead of re-polling for it. Player
--- only: SPELL_GO_SELF does not fire for anyone else's casts.
+-- trigger reads the cast off the payload instead of re-polling for it.
 local spellCastWatching = false
 function WA.WatchSpellCast()
 	if spellCastWatching then return end
 	spellCastWatching = true
-	subscribeSpellGoSelf(function(spellId)
+	subscribePlayerCastSucceeded(function(spellId)
 		WA.ScanEvents("WA_SPELL_CAST_SUCCEEDED", spellId)
 	end)
 end
 
--- Single-bit flag test (masks used here are all powers of two), so nothing
--- depends on a `bit` library being present -- AUTO_ATTACK_SELF hitInfo bits and
--- the Spell.dbc attribute/flag bits (via GetSpellRecField) both go through this.
-local function hasFlag(v, f) return math.mod(math.floor(v / f), 2) == 1 end
-
--- Totem watcher: emulates a GetTotemInfo(slot) the way pfUI's libtotem /
--- CallOfElements do on this client -- there's no native one on 1.12. A totem
--- drop is a shared-dispatch SPELL_GO_SELF matched against a bundled spellID->
--- {slot,duration} DB (ported from pfUI libtotem; CallOfElements builds the same
--- data at runtime by name-scan, so the static table is the cleaner source),
--- committing {name,icon,start,duration} into the element slot. Totemic Recall/
--- Call clears every slot (name-matched, enUS -- we ship no ID for it and Turtle
--- may re-ID it). No early-death detection beyond expiry + PLAYER_DEAD (no event
--- fires when a totem is killed) -- matches the references' own limitation.
+-- Swing-timer watcher. ClassicAPI's PLAYER_SWING (arg1 seconds until the next
+-- swing, arg2 Enum.PlayerSwingType) owns every timer reset: white hits with
+-- extra attacks collapsed, on-next-swing abilities, Auto Shot / Shoot with the
+-- wind-up taken off, spells that reset the swing, attack start, weapon swaps
+-- and parry haste. What it does not cover stays here, ported from pfUI's
+-- modules/swingtimer.lua: the Flurry rescale of an in-flight swing, the
+-- Slam/Hammer of Wrath clip warning, and the queued on-next-swing ability. Each
+-- hand is stored as {active,start,duration} the region animates, and the extra
+-- state is surfaced as condition variables instead of a hardcoded bar tint.
 
 do -- scoped; see the local-ceiling note in the file header
 
-local TOTEM_SPELLS = {
-	-- FIRE (slot 1)
-	[1535] = { 1, 5 }, [8498] = { 1, 5 }, [8499] = { 1, 5 }, [11314] = { 1, 5 }, [11315] = { 1, 5 },
-	[8227] = { 1, 120 }, [8249] = { 1, 120 }, [10526] = { 1, 120 }, [16387] = { 1, 120 },
-	[8184] = { 1, 120 }, [10478] = { 1, 120 }, [10479] = { 1, 120 },
-	[8190] = { 1, 20 }, [10585] = { 1, 20 }, [10586] = { 1, 20 }, [10587] = { 1, 20 },
-	[3599] = { 1, 30 }, [6363] = { 1, 35 }, [6364] = { 1, 40 }, [6365] = { 1, 45 }, [10437] = { 1, 50 }, [10438] = { 1, 55 },
-	-- EARTH (slot 2)
-	[2484] = { 2, 45 }, [5730] = { 2, 15 }, [6390] = { 2, 15 }, [6391] = { 2, 15 }, [6392] = { 2, 15 },
-	[10427] = { 2, 15 }, [10428] = { 2, 15 },
-	[8071] = { 2, 120 }, [8154] = { 2, 120 }, [8155] = { 2, 120 }, [10406] = { 2, 120 }, [10407] = { 2, 120 }, [10408] = { 2, 120 },
-	[8075] = { 2, 120 }, [8160] = { 2, 120 }, [8161] = { 2, 120 }, [10442] = { 2, 120 }, [25361] = { 2, 120 },
-	[8143] = { 2, 120 },
-	-- WATER (slot 3)
-	[8170] = { 3, 120 }, [8185] = { 3, 120 }, [10537] = { 3, 120 }, [10538] = { 3, 120 },
-	[5394] = { 3, 60 }, [6375] = { 3, 60 }, [6377] = { 3, 60 }, [10462] = { 3, 60 }, [10463] = { 3, 60 },
-	[5675] = { 3, 60 }, [10495] = { 3, 60 }, [10496] = { 3, 60 }, [10497] = { 3, 60 },
-	[16190] = { 3, 12 }, [8166] = { 3, 120 },
-	-- AIR (slot 4)
-	[8835] = { 4, 120 }, [10627] = { 4, 120 }, [8177] = { 4, 45 },
-	[10595] = { 4, 120 }, [10600] = { 4, 120 }, [10601] = { 4, 120 }, [25359] = { 4, 120 },
-	[8512] = { 4, 120 }, [10613] = { 4, 120 }, [10614] = { 4, 120 },
-	[15107] = { 4, 120 }, [15421] = { 4, 120 }, [15422] = { 4, 120 },
-}
-local TOTEM_RECALL_NAMES = { ["Totemic Recall"] = true, ["Totemic Call"] = true }
-local totemActive = {} -- slot -> { name, icon, start, duration }
-local totemMiscFrame
-local function totemClearAll()
-	local any = false
-	for slot in pairs(totemActive) do totemActive[slot] = nil; any = true end
-	if any then WA.ScanEvents("WA_TOTEM_UPDATE") end
-end
-function WA.WatchTotems()
-	if totemMiscFrame then return end
-	totemMiscFrame = CreateFrame("Frame")
-	pcall(totemMiscFrame.RegisterEvent, totemMiscFrame, "PLAYER_DEAD")
-	totemMiscFrame:SetScript("OnEvent", totemClearAll)
-	subscribeSpellGoSelf(function(spellId)
-		local data = TOTEM_SPELLS[spellId]
-		if data then
-			local name, _, icon = GetSpellInfo(spellId)
-			totemActive[data[1]] = { name = name, icon = icon, start = GetTime(), duration = data[2] }
-			WA.ScanEvents("WA_TOTEM_UPDATE")
-			return
-		end
-		local nm = GetSpellInfo(spellId)
-		if nm and TOTEM_RECALL_NAMES[nm] then totemClearAll() end
-	end)
-end
--- (active, name, icon, start, duration) or nil once expired (self-cleaning, the
--- same shape pfUI's GetTotemInfo returns).
-function WA.TotemInfo(slot)
-	local t = totemActive[slot]
-	if not t then return false end
-	if (t.start + t.duration) - GetTime() < 0 then
-		totemActive[slot] = nil
-		return false
-	end
-	return true, t.name, t.icon, t.start, t.duration
-end
-
-end -- totem watcher
-
--- Swing-timer watcher: a faithful port of pfUI modules/swingtimer.lua's state
--- machine, translated from its bar+OnUpdate rendering to WeakestAuras' data
--- model --
--- each hand is stored as {active,start,duration} the region animates, and the
--- extra swing state (blocked / clip / queued ability) is surfaced as condition
--- variables instead of a hardcoded bar tint. State is consolidated into one
--- table to stay clear of Lua 5.0's 32-upvalue-per-closure limit (pfUI's S does
--- the same). All the Spell.dbc reads go through GetSpellRecField, a Nampower
--- accessor (used by pfUI + DoiteAuras, not a ClassicAPI backport) -- every call
--- is guarded so a build lacking it simply degrades to AUTO_ATTACK_SELF-only
--- resets (the shipped core behaviour).
-
-do -- scoped; see the local-ceiling note in the file header
-
-local HITINFO_LEFTSWING, HITINFO_NOACTION = 4, 65536
-local ATTR_ON_NEXT_SWING = 4      -- 0x04    replaces the next auto-attack swing
-local FLAG_AUTOATTACK = 8         -- 0x08    interruptFlags: cast resets the swing
-local ATTR_KEEP_SWINGS = 131072   -- 0x20000 attributesEx2: cast does NOT reset it
 local SWING_PROC_LATENCY = 0.15
-local WAND_SHOOT_SPELLID, THROW_SPELLID = 5019, 2764
--- OctoWoW re-IDs Slam and SPELL_START_SELF is silent for it, so swing-delay casts
--- are matched by NAME off SPELLCAST_START (rank/id-proof).
+-- OctoWoW re-IDs Slam, so swing-delay casts are matched by NAME off
+-- UNIT_SPELLCAST_START (rank/id-proof).
 local SWING_DELAY_NAMES = { ["Slam"] = true, ["Hammer of Wrath"] = true }
 -- Rank-1 canonical names (rank/locale-proof) for on-next-swing classification.
-local HS_NAME = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(78)
-local CLEAVE_NAME = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(845)
-local MAUL_NAME = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(6807)
+local HS_NAME = C_Spell.GetSpellName(78)
+local CLEAVE_NAME = C_Spell.GetSpellName(845)
+local MAUL_NAME = C_Spell.GetSpellName(6807)
+local SWING_HANDS = { [0] = "main", [1] = "off", [2] = "ranged" }
 
 local swing = {
 	main = { active = false, start = 0, duration = 0 },
@@ -4699,34 +5105,20 @@ local sw = {
 	mhBlocked = false, mhClipWarn = false, mhClipDelay = 0,
 	queued = "none", useSQE = false,
 	isWarrior = false, hsSlots = {}, cleaveSlots = {},
-	playerGuid = nil, onSwingCache = {},
 }
 local swingFrame
 
 local function swingUpdateSpeeds()
-	if UnitAttackSpeed then
-		local ms, os = UnitAttackSpeed("player")
-		if ms and ms > 0 then sw.mhSpeed = ms end
-		sw.ohSpeed = (os and os > 0) and os or 0
-	end
-	if UnitRangedDamage then
-		local rs = UnitRangedDamage("player")
-		sw.raSpeed = (rs and rs > 0) and rs or 0
-	end
+	local ms, os = UnitAttackSpeed("player")
+	if ms and ms > 0 then sw.mhSpeed = ms end
+	sw.ohSpeed = (os and os > 0) and os or 0
+	local rs = UnitRangedDamage("player")
+	sw.raSpeed = (rs and rs > 0) and rs or 0
 end
 
--- Spell.dbc "replaces the next swing" bit (SPELL_ATTR_ON_NEXT_SWING), cached.
-local function isOnSwingSpell(spellId)
-	local c = sw.onSwingCache[spellId]
-	if c ~= nil then return c end
-	local attr = (GetSpellRecField and GetSpellRecField(spellId, "attributes")) or 0
-	local r = hasFlag(attr, ATTR_ON_NEXT_SWING)
-	sw.onSwingCache[spellId] = r
-	return r
-end
 local function classifyOnSwing(spellId)
-	if not isOnSwingSpell(spellId) then return nil end
-	local name = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(spellId)
+	if not C_Spell.IsNextMeleeSpell(spellId) then return nil end
+	local name = C_Spell.GetSpellName(spellId)
 	if name and name == HS_NAME then return "hs"
 	elseif name and name == CLEAVE_NAME then return "cleave"
 	elseif name and name == MAUL_NAME then return "maul" end
@@ -4736,7 +5128,7 @@ end
 -- SPELL_QUEUE_EVENT. Warriors only (HS/Cleave); rebuilt on bar/equipment change.
 local function rebuildQueueSlots()
 	sw.hsSlots = {}; sw.cleaveSlots = {}
-	if not (sw.isWarrior and GetActionInfo) then return end
+	if not sw.isWarrior then return end
 	for slot = 1, 120 do
 		local kind, id = GetActionInfo(slot)
 		local name
@@ -4747,8 +5139,7 @@ local function rebuildQueueSlots()
 	end
 end
 local function anyCurrentAction(slots)
-	if not IsCurrentAction then return false end
-	for i = 1, table.getn(slots) do
+	for i = 1, #slots do
 		if IsCurrentAction(slots[i]) then return true end
 	end
 	return false
@@ -4764,23 +5155,16 @@ function WA.SwingQueued()
 	return "none"
 end
 
-local function swingReset(hand)
+-- A PLAYER_SWING reset. The event gives only the time left, which is shorter
+-- than the weapon speed after parry haste or a ranged wind-up, so the bar keeps
+-- the full speed and starts in the past rather than restarting from empty.
+local function swingReset(hand, remaining)
 	swingUpdateSpeeds()
 	local speed = (hand == "off" and sw.ohSpeed) or (hand == "ranged" and sw.raSpeed) or sw.mhSpeed
-	if not speed or speed <= 0 then return end
+	local duration = (speed > remaining) and speed or remaining
 	local s = swing[hand]
-	s.start = GetTime(); s.duration = speed; s.active = true
+	s.start = GetTime() + remaining - duration; s.duration = duration; s.active = true
 	if hand == "main" then sw.mhBlocked = false; sw.mhClipWarn = false; sw.mhClipDelay = 0 end
-	WA.ScanEvents("WA_SWING_UPDATE")
-end
--- Ranged auto-attack: Auto Shot / Throw replace the melee swing clock; wand Shoot
--- leaves it running (casters weave), so replaceMH is false only there.
-local function swingResetRanged(replaceMH)
-	swingUpdateSpeeds()
-	if sw.raSpeed <= 0 then return end
-	if replaceMH then swing.main.active = false end
-	local r = swing.ranged
-	r.start = GetTime(); r.duration = sw.raSpeed; r.active = true
 	WA.ScanEvents("WA_SWING_UPDATE")
 end
 -- Flurry: only a haste GAIN present at swing start (within the proc latency)
@@ -4807,37 +5191,15 @@ local function swingRescale()
 	end
 	if changed then WA.ScanEvents("WA_SWING_UPDATE") end
 end
--- Parry haste: the player parried (AUTO_ATTACK_OTHER victimState 3, victim = the
--- player) -> the nearest-to-firing melee swing is hastened 40% of weapon speed,
--- floored at 20% remaining (SP_SwingTimer's rule). Move `start` earlier, clamped.
-local function swingParryHaste()
-	local now = GetTime()
-	local function apply(s, speed)
-		if not s.active or not speed or speed <= 0 then return false end
-		local remaining = (s.start + s.duration) - now
-		local minimum = speed * 0.20
-		if remaining <= minimum then return false end
-		local reduced = remaining - speed * 0.40
-		if reduced < minimum then reduced = minimum end
-		s.start = now - (s.duration - reduced)
-		return true
-	end
-	local m, o = swing.main, swing.off
-	local mFrac = (m.active and m.duration > 0) and (((m.start + m.duration) - now) / m.duration) or 2
-	local oFrac = (o.active and o.duration > 0) and (((o.start + o.duration) - now) / o.duration) or 2
-	local changed
-	if oFrac < mFrac then changed = apply(o, sw.ohSpeed) else changed = apply(m, sw.mhSpeed) end
-	if changed then WA.ScanEvents("WA_SWING_UPDATE") end
-end
--- Swing-delay cast (Slam / Hammer of Wrath): the swing keeps ticking but the auto
--- can't fire until the cast ends. If the cast will finish AFTER the swing is
--- ready, the auto is clipped by (castDur - remaining) -- surfaced as clipWarning/
--- clipDelay. Called with a duration from SPELLCAST_START and with 0 from the
--- attribute-driven SPELL_START_SELF fallback, so a 0 only sets the block.
+-- A cast that does not reset the swing holds the main-hand auto until it ends;
+-- the swing keeps ticking (one that resets it is PLAYER_SWING's). For a
+-- named swing-delay cast (Slam / Hammer of Wrath) that will finish AFTER the
+-- swing is ready, the auto is clipped by (castDur - remaining) -- surfaced as
+-- clipWarning/clipDelay. Any other cast passes 0, which only sets the block.
 local function swingBeginDelayCast(castDur)
 	if not swing.main.active then return end
 	sw.mhBlocked = true
-	if castDur and castDur > 0 then
+	if castDur > 0 then
 		local remaining = (swing.main.start + swing.main.duration) - GetTime()
 		local clip = castDur - remaining
 		if clip > 0 then sw.mhClipWarn = true; sw.mhClipDelay = clip end
@@ -4850,74 +5212,43 @@ local function swingClearDelayCast()
 		WA.ScanEvents("WA_SWING_UPDATE")
 	end
 end
--- Shared-dispatch SPELL_GO_SELF: a cast landed. Ranged auto-attacks reset the
--- ranged clock; on-next-swing abilities (HS/Cleave/Maul/Raptor/etc.) consume the
--- MH swing; otherwise mirror the server melee-reset rule (interruptFlags has
--- AUTOATTACK and attributesEx2 lacks KEEP_SWINGS). A blocked swing-delay cast
--- that doesn't reset just releases the hold.
-local function swingOnSpellGo(spellId)
-	if C_Spell and C_Spell.IsRangedAutoAttackSpell and C_Spell.IsRangedAutoAttackSpell(spellId) then
-		swingResetRanged(spellId ~= WAND_SHOOT_SPELLID)
-		return
-	elseif spellId == THROW_SPELLID then
-		swingResetRanged(true)
-		return
-	elseif isOnSwingSpell(spellId) then
+-- A landed on-next-swing ability is the queued one going off.
+local function swingOnCast(spellId)
+	if sw.queued ~= "none" and C_Spell.IsNextMeleeSpell(spellId) then
 		sw.queued = "none"
-		swingReset("main")
-		return
-	end
-	local iflags = (GetSpellRecField and GetSpellRecField(spellId, "interruptFlags")) or 0
-	local ex2 = (GetSpellRecField and GetSpellRecField(spellId, "attributesEx2")) or 0
-	if hasFlag(iflags, FLAG_AUTOATTACK) and not hasFlag(ex2, ATTR_KEEP_SWINGS) then
-		if swing.main.active then swingReset("main") end
-		if swing.off.active then swingReset("off") end
-	elseif sw.mhBlocked then
-		swingClearDelayCast()
+		WA.ScanEvents("WA_SWING_UPDATE")
 	end
 end
 function WA.WatchSwing()
 	if swingFrame then return end
 	local _, class = UnitClass("player")
 	sw.isWarrior = (class == "WARRIOR")
-	if UnitExists then local _, g = UnitExists("player"); sw.playerGuid = g end
 	swingUpdateSpeeds()
 	rebuildQueueSlots()
 	swingFrame = CreateFrame("Frame")
-	local evs = { "AUTO_ATTACK_SELF", "AUTO_ATTACK_OTHER", "START_AUTOATTACK",
-		"STOP_AUTOATTACK", "UNIT_ATTACK_SPEED", "PLAYER_EQUIPMENT_CHANGED",
-		"PLAYER_ENTERING_WORLD", "ACTIONBAR_SLOT_CHANGED", "SPELLCAST_START",
-		"SPELL_START_SELF", "SPELLCAST_FAILED", "SPELLCAST_INTERRUPTED",
-		"SPELL_QUEUE_EVENT" }
-	for i = 1, table.getn(evs) do pcall(swingFrame.RegisterEvent, swingFrame, evs[i]) end
+	local evs = { "PLAYER_SWING", "STOP_AUTOATTACK", "UNIT_ATTACK_SPEED",
+		"PLAYER_EQUIPMENT_CHANGED", "PLAYER_ENTERING_WORLD", "ACTIONBAR_SLOT_CHANGED",
+		"UNIT_SPELLCAST_START", "UNIT_SPELLCAST_STOP" }
+	for i = 1, #evs do swingFrame:RegisterEvent(evs[i]) end
+	-- Nampower's, so guarded: without it the action-slot poll answers instead.
+	pcall(swingFrame.RegisterEvent, swingFrame, "SPELL_QUEUE_EVENT")
 	swingFrame:SetScript("OnEvent", function()
-		if event == "AUTO_ATTACK_SELF" then
-			local hitInfo = arg4 or 0
-			local hand = hasFlag(hitInfo, HITINFO_LEFTSWING) and "off" or "main"
-			local s = swing[hand]
-			-- Server didn't advance the clock (dodge/parry/miss): leave a running
-			-- timer alone, but still start one that isn't active yet.
-			if hasFlag(hitInfo, HITINFO_NOACTION) and s.active then return end
-			-- Extra attack: >20% of the swing still remaining => the server did not
-			-- reset the clock, so this hit is an extra attack -- don't restart.
-			if s.active and s.duration > 0 then
-				local remaining = (s.start + s.duration) - GetTime()
-				if remaining > 0 and (remaining / s.duration) > 0.20 then return end
-			end
-			swingReset(hand)
-		elseif event == "AUTO_ATTACK_OTHER" then
-			if arg5 == 3 and (not sw.playerGuid or arg2 == sw.playerGuid) then swingParryHaste() end
+		if event == "PLAYER_SWING" then
+			local hand = SWING_HANDS[arg2]
+			if hand then swingReset(hand, arg1) end
 		elseif event == "UNIT_ATTACK_SPEED" then
-			if arg1 and arg1 ~= "player" then return end
+			if arg1 ~= "player" then return end
 			swingRescale()
-		elseif event == "SPELLCAST_START" then
-			if arg1 and SWING_DELAY_NAMES[arg1] then swingBeginDelayCast((arg2 or 0) / 1000) end
-		elseif event == "SPELL_START_SELF" then
-			if arg1 and arg1 > 0 and swing.main.active then
-				local iflags = (GetSpellRecField and GetSpellRecField(arg1, "interruptFlags")) or 0
-				if not hasFlag(iflags, FLAG_AUTOATTACK) then swingBeginDelayCast(0) end
+		elseif event == "UNIT_SPELLCAST_START" then
+			if arg1 ~= "player" or C_Spell.ResetsMeleeSwing(arg3) then return end
+			local castDur = 0
+			if SWING_DELAY_NAMES[arg4] then
+				local _, _, _, startMs, endMs = C_Spell.UnitCastingInfo("player")
+				castDur = ((endMs or 0) - (startMs or 0)) / 1000
 			end
-		elseif event == "SPELLCAST_FAILED" or event == "SPELLCAST_INTERRUPTED" then
+			swingBeginDelayCast(castDur)
+		elseif event == "UNIT_SPELLCAST_STOP" then
+			if arg1 ~= "player" then return end
 			swingClearDelayCast()
 		elseif event == "SPELL_QUEUE_EVENT" then
 			if arg1 == 0 then
@@ -4941,7 +5272,7 @@ function WA.WatchSwing()
 			rebuildQueueSlots()
 		end
 	end)
-	subscribeSpellGoSelf(swingOnSpellGo)
+	subscribePlayerCastSucceeded(swingOnCast)
 end
 -- (active, start, duration, blocked, clipWarning, clipDelay, queuedAbility) or
 -- false. blocked/clip/queued are main-hand-only concepts (false/0/"none" else).
@@ -4983,8 +5314,8 @@ local function powerTickOnPowerEvent()
 	pt.lastPower = newPower
 	-- In vanilla a spend does not reset the tick, so a decrease is a no-op.
 	if newPower < oldPower then return end
-	-- A buff/proc gain (e.g. Thistle Tea) also raises power but isn't a tick;
-	-- the combat-log filter below flags the one that follows so it doesn't
+	-- A spell gain (e.g. Thistle Tea) also raises power but isn't a tick; the
+	-- combat log's energize entry below flags the one that follows so it doesn't
 	-- restart the clock. Consumed on any non-decrease, not just a strict
 	-- increase, so a gain landing at already-full power doesn't leave the flag
 	-- to swallow the next real tick.
@@ -5008,15 +5339,17 @@ function WA.WatchPowerTick()
 	powerTickResync()
 	powerTickFrame = CreateFrame("Frame")
 	local evs = { "UNIT_MANA", "UNIT_ENERGY", "UNIT_RAGE", "UNIT_DISPLAYPOWER",
-		"PLAYER_ENTERING_WORLD", "CHAT_MSG_SPELL_SELF_BUFF",
-		"CHAT_MSG_SPELL_PERIODIC_SELF_BUFFS" }
-	for i = 1, table.getn(evs) do pcall(powerTickFrame.RegisterEvent, powerTickFrame, evs[i]) end
+		"PLAYER_ENTERING_WORLD", "COMBAT_LOG_EVENT_UNFILTERED" }
+	for i = 1, #evs do powerTickFrame:RegisterEvent(evs[i]) end
 	powerTickFrame:SetScript("OnEvent", function()
 		if event == "UNIT_DISPLAYPOWER" or event == "PLAYER_ENTERING_WORLD" then
 			if arg1 and arg1 ~= "player" then return end
 			powerTickResync()
-		elseif event == "CHAT_MSG_SPELL_SELF_BUFF" or event == "CHAT_MSG_SPELL_PERIODIC_SELF_BUFFS" then
-			if arg1 and string.find(arg1, "You gain") and string.find(arg1, "Energy from") then
+		elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
+			-- arg8 destGUID, arg16 powerType. The energize log arrives ahead of
+			-- the power update, as the chat line it replaced did.
+			if (arg2 == "SPELL_ENERGIZE" or arg2 == "SPELL_PERIODIC_ENERGIZE")
+				and arg16 == pt.powerType and arg8 == UnitGUID("player") then
 				pt.ignoreNextGain = true
 			end
 		else
@@ -5053,7 +5386,7 @@ local function ensureEventRegistered(event)
 	registered[event] = true
 	local compat = EVENT_COMPAT[event]
 	if compat then
-		for i = 1, table.getn(compat) do
+		for i = 1, #compat do
 			pcall(eventFrame.RegisterEvent, eventFrame, compat[i])
 		end
 		return
@@ -5112,6 +5445,13 @@ local function passesUnitFilter(ti, event, unit)
 	if not set then return true end
 	if unit == nil then return false end
 	return set[string.lower(tostring(unit))] and true or false
+end
+
+-- The same for "CLEU:SUBEVENT": the combat log's subevent is its arg2.
+local function passesSubeventFilter(ti, event, subevent)
+	local set = ti.subeventFilter
+	if not set or event ~= "COMBAT_LOG_EVENT_UNFILTERED" then return true end
+	return subevent ~= nil and set[subevent] and true or false
 end
 
 -- A trigger asking for FRAME_UPDATE at every frame is affordable only because it
@@ -5292,7 +5632,7 @@ local function runMultiUnitFullPass(ti, states, event)
 	for cloneId in pairs(states) do
 		if cloneId ~= "" and not seen[cloneId] then table.insert(stale, cloneId) end
 	end
-	for i = 1, table.getn(stale) do
+	for i = 1, #stale do
 		states[stale[i]] = nil
 		dirty = true
 	end
@@ -5339,6 +5679,62 @@ local function runMultiUnitTrigger(ti, event, unit)
 	return runMultiUnitFullPass(ti, states, event)
 end
 
+-- A combat log payload runs to 24 values (a damage event's critical flag is the
+-- 21st), wider than the nine this dispatch carries. Upstream hands trigger code
+-- CombatLogGetCurrentEventInfo() instead, which answers for as long as the
+-- event's handler runs -- and every trigger runs inside it. The target is staged
+-- in an upvalue for the reason safecall's arguments are: no user code runs
+-- between the write and the call that reads it.
+--
+-- A chat event is wider too: ClassicAPI appends the line ID (arg11) and the
+-- sender's GUID (arg12), upstream's layout. GetCurrentChatEvent() hands over all
+-- twelve, but only while that event's handler runs, so it is used only when the
+-- event in progress is the one being dispatched. A ScanEvents call naming a chat
+-- event from anywhere else keeps the payload its caller passed.
+--
+-- The call is fn(state, event, ...) when `state` is given (a prototype test, a
+-- TSU's allstates, a legacy trigger's state), else fn(event, ...).
+local runTriggerCode
+do
+	local cleuTarget
+	local function cleuWithState(state, event)
+		return cleuTarget(state, event, CombatLogGetCurrentEventInfo())
+	end
+	local function cleuNoState(event)
+		return cleuTarget(event, CombatLogGetCurrentEventInfo())
+	end
+	local chatTarget
+	local function chatWithState(state, event)
+		return chatTarget(state, event, select(2, GetCurrentChatEvent()))
+	end
+	local function chatNoState(event)
+		return chatTarget(event, select(2, GetCurrentChatEvent()))
+	end
+	-- Memoised per name: this runs for every trigger on every dispatch,
+	-- FRAME_UPDATE included, and a string.sub per call is garbage.
+	local isChatEvent = setmetatable({}, { __index = function(t, name)
+		local v = string.sub(name, 1, 9) == "CHAT_MSG_"
+		t[name] = v
+		return v
+	end })
+	function runTriggerCode(ti, errTag, fn, state, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+		if event == "COMBAT_LOG_EVENT_UNFILTERED" or event == "COMBAT_LOG_EVENT" then
+			cleuTarget = fn
+			if state then return WA.RunAuraFunc(ti.id, errTag, cleuWithState, state, event) end
+			return WA.RunAuraFunc(ti.id, errTag, cleuNoState, event)
+		end
+		if isChatEvent[event] and GetCurrentChatEvent() == event then
+			chatTarget = fn
+			if state then return WA.RunAuraFunc(ti.id, errTag, chatWithState, state, event) end
+			return WA.RunAuraFunc(ti.id, errTag, chatNoState, event)
+		end
+		if state then
+			return WA.RunAuraFunc(ti.id, errTag, fn, state, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+		end
+		return WA.RunAuraFunc(ti.id, errTag, fn, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
+	end
+end
+
 -- Runs a Trigger State Updater over its whole allstates table (upstream's `full`
 -- statesParameter, §4.3): the custom function owns every clone key and reports
 -- either by returning truthy or through the helper methods. Nothing here shapes
@@ -5351,7 +5747,7 @@ local function runTsuTrigger(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	-- recompile, so the helpers have to be re-attached to whatever table is live.
 	WA.EnsureAllStates(states, ti.showNilIsFalse)
 	states:SetChanged(false)
-	local ok, returned = WA.RunAuraFunc(ti.id, ti.id, ti.triggerFunc, states, event,
+	local ok, returned = runTriggerCode(ti, ti.id, ti.triggerFunc, states, event,
 		a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	local dirty = (ok and (returned or (returned ~= false and states:IsChanged()))) and true or false
 	states:SetChanged(false)
@@ -5369,7 +5765,7 @@ local function runTsuTrigger(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 			.. "] all states table contains a non-table at key: " .. tostring(bad), true)
 		local keys = {}
 		for key in pairs(states) do table.insert(keys, key) end
-		for i = 1, table.getn(keys) do states[keys[i]] = nil end
+		for i = 1, #keys do states[keys[i]] = nil end
 		WA.StopStateTimers(ti.id, ti.triggernum)
 		return true
 	end
@@ -5420,10 +5816,10 @@ local function runTriggerFunc(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	-- true "changed since last apply" signal.
 	local ok, passed
 	if ti.custom and not ti.legacyStateArgs then
-		ok, passed = WA.RunAuraFunc(ti.id, ti.id, ti.triggerFunc, event,
+		ok, passed = runTriggerCode(ti, ti.id, ti.triggerFunc, nil, event,
 			a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	else
-		ok, passed = WA.RunAuraFunc(ti.id, ti.id, ti.triggerFunc, state, event,
+		ok, passed = runTriggerCode(ti, ti.id, ti.triggerFunc, state, event,
 			a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	end
 	if (ok and passed) or optionsEvent then
@@ -5435,13 +5831,8 @@ local function runTriggerFunc(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 		activateEvent(state, ti, cloneId, optionsEvent)
 	elseif ok and ti.untriggerFunc then
 		local untriggerOk, shouldHide
-		if ti.legacyStateArgs then
-			untriggerOk, shouldHide = WA.RunAuraFunc(ti.id, ti.id .. ": untrigger",
-				ti.untriggerFunc, state, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
-		else
-			untriggerOk, shouldHide = WA.RunAuraFunc(ti.id, ti.id .. ": untrigger",
-				ti.untriggerFunc, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
-		end
+		untriggerOk, shouldHide = runTriggerCode(ti, ti.id .. ": untrigger", ti.untriggerFunc,
+			ti.legacyStateArgs and state or nil, event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 		if untriggerOk and shouldHide and state.show then
 			state.show = false; state.changed = true
 		end
@@ -5509,6 +5900,7 @@ local function scanRegistered(event, dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	for id, byTrigger in pairs(byId) do
 		for triggernum, ti in pairs(byTrigger) do
 			if not WA.forced[id] and passesUnitFilter(ti, event, a1)
+				and passesSubeventFilter(ti, event, a2)
 				and (event ~= "FRAME_UPDATE" or checkOnUpdateThrottle(ti)) then
 				if runTriggerFunc(ti, event, a1, a2, a3, a4, a5, a6, a7, a8, a9) then
 					dirty = dirty or {}
@@ -5530,7 +5922,7 @@ function WA.ScanEvents(event, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	local dirty = scanRegistered(event, nil, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 	local compat = EVENT_COMPAT_SOURCES[event]
 	if compat then
-		for i = 1, table.getn(compat) do
+		for i = 1, #compat do
 			dirty = scanRegistered(compat[i], dirty, a1, a2, a3, a4, a5, a6, a7, a8, a9)
 		end
 	end
@@ -5575,7 +5967,7 @@ local function unregisterEvents(id)
 			ti.hideTimers = nil
 		end
 		local evs = ti.eventList or {}
-		for i = 1, table.getn(evs) do
+		for i = 1, #evs do
 			local token = unitChangeToken(evs[i])
 			if token then WA.UnwatchUnitToken(token) end
 			local map = loaded_events[evs[i]]
@@ -5609,12 +6001,12 @@ function GenericTrigger.Add(data)
 	WA.ClearWarningPrefix(WA.WarningUidFor(data.id), "unresolved:")
 	compilingId = data.id
 
-	for triggernum = 1, table.getn(data.triggers) do
+	for triggernum = 1, #data.triggers do
 		local trigger = WA.GetTrigger(data, triggernum)
 		local proto = trigger and PROTOTYPES[trigger.type]
 		if proto then
 			local fn, source, sourceKey, untriggerFunc, customDurationFunc, customNameFunc, customIconFunc
-			local tsuVariablesFunc, customEvents, customUnitFilters, customWatched
+			local tsuVariablesFunc, customEvents, customUnitFilters, customWatched, customSubevents
 			local errTag = data.id .. ": trigger " .. triggernum
 			local isTsu = proto.custom and trigger.custom_type == "stateupdate"
 			if proto.custom then
@@ -5647,7 +6039,7 @@ function GenericTrigger.Add(data)
 				if (trigger.custom_type == "status" or isTsu) and trigger.check == "update" then
 					customEvents = { "FRAME_UPDATE" }
 				else
-					customEvents, customUnitFilters, customWatched = parseCustomEventList(trigger.events)
+					customEvents, customUnitFilters, customWatched, customSubevents = parseCustomEventList(trigger.events)
 				end
 				if customWatched then
 					registerWatchedTriggers(data.id, triggernum, customWatched)
@@ -5668,7 +6060,7 @@ function GenericTrigger.Add(data)
 					id = data.id, triggernum = triggernum, proto = proto,
 					trigger = trigger, triggerFunc = fn, source = source, sourceKey = sourceKey,
 					eventMode = (proto.eventMode or (proto.custom and trigger.custom_type == "event")) and true or false,
-					useCloneId = (trigger.type == "chatmessage" and trigger.use_cloneId) and true or false,
+					useCloneId = (proto.eventMode and trigger.use_cloneId) and true or false,
 					multiUnit = proto.statesParameter == "unit" and WA.MultiUnitFamily(trigger) or nil,
 					eventList = customEvents or proto.events(trigger),
 					name = proto.nameFunc and proto.nameFunc(trigger) or nil,
@@ -5678,6 +6070,7 @@ function GenericTrigger.Add(data)
 				if proto.custom then
 					ti.custom = true
 					ti.unitFilters = customUnitFilters
+					ti.subeventFilter = customSubevents
 					ti.onUpdateThrottle = tonumber(trigger.onUpdateThrottle) or 0
 					ti.legacyStateArgs = trigger.weakestAurasLegacyStateArgs and true or false
 					if isTsu then
@@ -5707,6 +6100,10 @@ function GenericTrigger.Add(data)
 					ti.autoHide = true
 					ti.duration = tonumber(trigger.duration) or 1
 				end
+				-- A prototype listening to the combat log names the subevents it
+				-- wants, and dispatch drops the rest before the compiled test runs
+				-- -- the same filter a custom trigger's CLEU:SUBEVENT sets.
+				if proto.subevents then ti.subeventFilter = proto.subevents(trigger) end
 				byTrigger[triggernum] = ti
 			end
 		end
@@ -5719,14 +6116,14 @@ end
 -- (§4.3 force_events) and recombine once. Only touches ids this system
 -- compiled (events[id]).
 function GenericTrigger.LoadDisplays(ids)
-	for k = 1, table.getn(ids) do
+	for k = 1, #ids do
 		local id = ids[k]
 		local byTrigger = events[id]
 		if byTrigger and not activeIds[id] then
 			activeIds[id] = true
 			local toForce = {}
 			for triggernum, ti in pairs(byTrigger) do
-				for i = 1, table.getn(ti.eventList) do
+				for i = 1, #ti.eventList do
 					local ev = ti.eventList[i]
 					ensureEventRegistered(ev)
 					-- The occupancy watch is refcounted against the same list
@@ -5746,8 +6143,8 @@ function GenericTrigger.LoadDisplays(ids)
 				if ti.proto.loadFunc then ti.proto.loadFunc(ti.trigger) end
 				if ti.forceEvents then table.insert(toForce, ti) end
 			end
-			if table.getn(toForce) > 0 then
-				for i = 1, table.getn(toForce) do
+			if #toForce > 0 then
+				for i = 1, #toForce do
 					local ti = toForce[i]
 					if runTriggerFunc(ti, ti.tsu and "STATUS" or "FORCE") then
 						WA.NotifyWatchedTriggers(id, ti.triggernum)
@@ -5766,7 +6163,7 @@ end
 -- retiring its fake, which otherwise leaves a still-true status trigger reading
 -- as inactive until its next real event.
 function GenericTrigger.ForceUpdate(ids)
-	for k = 1, table.getn(ids) do
+	for k = 1, #ids do
 		local id = ids[k]
 		local byTrigger = events[id]
 		if byTrigger and activeIds[id] then
@@ -5787,7 +6184,7 @@ end
 -- Unload: pull the display's tis from loaded_events, keeping events[id] so a
 -- reload re-registers without recompiling.
 function GenericTrigger.UnloadDisplays(ids)
-	for k = 1, table.getn(ids) do
+	for k = 1, #ids do
 		local id = ids[k]
 		if activeIds[id] then
 			activeIds[id] = nil
@@ -5820,7 +6217,7 @@ function GenericTrigger.Rename(oldId, newId)
 	for triggernum, ti in pairs(byTrigger) do
 		ti.id = newId
 		local evs = ti.eventList or {}
-		for i = 1, table.getn(evs) do
+		for i = 1, #evs do
 			local map = loaded_events[evs[i]]
 			if map and map[oldId] then
 				map[newId] = map[oldId]
@@ -5886,7 +6283,7 @@ local function addFakeInformation(data, triggernum, state, ti)
 	end
 	if state.progressType == "timed" then
 		local expirationTime = state.expirationTime
-		if not (type(expirationTime) == "number" and expirationTime ~= WA.INF
+		if not (type(expirationTime) == "number" and expirationTime ~= math.huge
 			and expirationTime > GetTime()) then
 			state.duration = PREVIEW_WINDOW
 			state.expirationTime = GetTime() + PREVIEW_WINDOW
@@ -6021,9 +6418,10 @@ function GenericTrigger.GetTriggerConditions(data, triggernum)
 		return out
 	end
 	local out = {}
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
-		if arg.conditionType then
+		-- A field the trigger's mode never fills is not offered as a variable.
+		if arg.conditionType and not (arg.enable and not arg.enable(trigger)) then
 			out[arg.name] = { display = arg.display or arg.name, type = arg.conditionType,
 				values = arg.valueLabels }
 		end
@@ -6059,9 +6457,15 @@ end
 -- GenericTrigger system, registered for all of them.
 -- ---------------------------------------------------------------------------
 
+-- A tristate's three values, as the editor's dropdown spells them. The arg has
+-- no default: a nil use_<name> is "ignored", which is also what buildDefaults
+-- leaves it as.
+local TRISTATE_VALUES = { "ignore", "true", "false" }
+local TRISTATE_LABELS = { ignore = "Any", ["true"] = "Yes", ["false"] = "No" }
+
 local function buildDefaults(proto)
 	local d = {}
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
 		if arg.type == "unit" then
 			d[arg.name] = arg.default or "player"
@@ -6090,6 +6494,9 @@ local function buildDefaults(proto)
 			local values = type(arg.valueList) == "function" and arg.valueList(d) or arg.valueList
 			d[arg.name] = arg.default or (values and values[1])
 			d[arg.name .. "_multi"] = {}
+		elseif arg.type == "list" then
+			if not arg.required then d["use_" .. arg.name] = false end
+			d[arg.name] = {}
 		elseif arg.type == "number" and not arg.required then
 			d["use_" .. arg.name] = false
 			d[arg.name .. "_operator"] = arg.operator or ">="
@@ -6160,18 +6567,18 @@ local function buildOptions(data, triggernum)
 			if isTsu then
 				table.insert(more, { type = "description", name =
 					"UNIT_AURA:player:target fires only for the listed units. TRIGGER:2 "
-					.. "runs this trigger when trigger 2 updates. CLEU: is not available "
-					.. "on this client." })
+					.. "runs this trigger when trigger 2 updates. CLEU:SPELL_DAMAGE fires "
+					.. "for those combat log subevents only." })
 			end
 			local invalid, redirected = invalidEventList(t.events)
-			if table.getn(invalid) > 0 then
+			if #invalid > 0 then
 				table.insert(more, { type = "description", name =
 					"|cffff5555Not registered by this client: " .. table.concat(invalid, ", ")
 					.. ".|r The names remain saved for addon-generated events." })
 			end
-			if table.getn(redirected) > 0 then
+			if #redirected > 0 then
 				local lines = {}
-				for i = 1, table.getn(redirected) do
+				for i = 1, #redirected do
 					table.insert(lines, redirected[i] .. " ("
 						.. table.concat(EVENT_COMPAT[redirected[i]], ", ") .. ")")
 				end
@@ -6282,13 +6689,13 @@ local function buildOptions(data, triggernum)
 				set = function(v) t.customIcon = v; WA.Add(data) end,
 				validate = function(txt) return validate(txt, "icon info") end })
 		end
-		for i = 1, table.getn(more) do table.insert(fields, more[i]) end
+		for i = 1, #more do table.insert(fields, more[i]) end
 		return fields
 	end
 
 	local fields = WA.TriggerTypeFields(data, t)
 
-	for i = 1, table.getn(proto.args) do
+	for i = 1, #proto.args do
 		local arg = proto.args[i]
 		-- An arg whose enable() is false is inapplicable to the trigger's selected
 		-- mode (a spell field while the range mode is "interact"): its control is
@@ -6388,6 +6795,23 @@ local function buildOptions(data, triggernum)
 					if arg.reloadOptions then WA.RefreshOptions() end
 				end,
 			})
+		elseif arg.type == "tristate" then
+			-- Three states in one control. A checkbox cannot cycle nil/true/false,
+			-- so the dropdown writes the same use_<name> key upstream's does.
+			table.insert(fields, {
+				type = "select", name = arg.display or arg.name, key = "use_" .. arg.name, half = true,
+				values = TRISTATE_VALUES, labels = TRISTATE_LABELS,
+				get = function()
+					local use = t["use_" .. arg.name]
+					if use == nil then return "ignore" end
+					return use and "true" or "false"
+				end,
+				set = function(v)
+					if v == "ignore" then t["use_" .. arg.name] = nil
+					else t["use_" .. arg.name] = (v == "true") end
+					WA.Add(data)
+				end,
+			})
 		elseif arg.type == "select" and arg.required then
 			table.insert(fields, {
 				type = "select", name = arg.display or arg.name, key = arg.name,
@@ -6402,7 +6826,7 @@ local function buildOptions(data, triggernum)
 					if arg.name == "itemClassID" and t.type == "itemtypeequipped" then
 						local subclassValues = itemSubclassValues(v)
 						local valid = {}
-						for j = 1, table.getn(subclassValues) do valid[subclassValues[j]] = true end
+						for j = 1, #subclassValues do valid[subclassValues[j]] = true end
 						if not valid[t.itemSubclassID] then t.itemSubclassID = subclassValues[1] end
 						local set = t.itemSubclassID_multi
 						for value in pairs(set or {}) do
@@ -6428,6 +6852,23 @@ local function buildOptions(data, triggernum)
 						t[arg.name] = v; WA.Add(data)
 						if arg.reloadOptions then WA.RefreshOptions() end
 					end,
+				})
+			end
+		elseif arg.type == "list" then
+			table.insert(fields, {
+				type = "toggle", name = arg.display or arg.name, key = "use_" .. arg.name,
+				get = function() return t["use_" .. arg.name] end,
+				set = function(v) t["use_" .. arg.name] = v; WA.Add(data); WA.RefreshOptions() end,
+			})
+			if t["use_" .. arg.name] then
+				table.insert(fields, {
+					type = "namelist", name = arg.listLabel or arg.display or arg.name, key = arg.name,
+					tooltip = arg.tooltip,
+					get = function()
+						if type(t[arg.name]) ~= "table" then t[arg.name] = {} end
+						return t[arg.name]
+					end,
+					onChange = function() WA.Add(data) end,
 				})
 			end
 		elseif arg.type == "multiselect" then
@@ -6514,6 +6955,11 @@ for typeName, proto in pairs(PROTOTYPES) do
 			-- prototype that fans a unit family out into clones from one whose
 			-- unit dropdown holds single tokens only.
 			statesParameter = proto.statesParameter,
+			-- The importer reads the arg declarations for the shapes the
+			-- defaults cannot describe (a tristate has no default), and asks the
+			-- prototype's own importCheck about settings it cannot express.
+			args = proto.args,
+			importCheck = proto.importCheck,
 			summary = buildSummary(proto),
 			options = buildOptions,
 		})

@@ -45,7 +45,7 @@ local function groupRect(gdata)
 	end
 	local blx, bly, trx, try
 	local kids = gdata.controlledChildren or {}
-	for i = 1, table.getn(kids) do
+	for i = 1, #kids do
 		local cd = WeakestAurasDB.displays[kids[i]]
 		if cd and WA.regionPrototype.IsGroupAnchored(cd) then
 			local a, b, c, d = childRect(cd)
@@ -86,7 +86,7 @@ end
 -- childVisible check).
 local function groupHasVisibleChild(data)
 	local kids = data.controlledChildren or {}
-	for i = 1, table.getn(kids) do
+	for i = 1, #kids do
 		local id = kids[i]
 		local shown = false
 		WA.ForEachClone(id, function(frame)
@@ -157,7 +157,7 @@ local function applyGroupBounds(region, data)
 	-- into it moved by the same amount. Only the children the box was measured
 	-- from: one anchored elsewhere never moved with the frame and owes nothing.
 	local kids = data.controlledChildren or {}
-	for i = 1, table.getn(kids) do
+	for i = 1, #kids do
 		local cd = WeakestAurasDB.displays[kids[i]]
 		if cd and WA.regionPrototype.IsGroupAnchored(cd) then
 			WA.ForEachClone(cd.id, function(frame)
@@ -199,7 +199,7 @@ function WA.ComposeSorts(f1, f2, f3, f4, f5, f6)
 	if type(f5) == "function" then table.insert(sorts, f5) end
 	if type(f6) == "function" then table.insert(sorts, f6) end
 	return function(a, b)
-		for i = 1, table.getn(sorts) do
+		for i = 1, #sorts do
 			local result = sorts[i](a, b)
 			if result ~= nil then return result end
 		end
@@ -248,7 +248,7 @@ function WA.SortRegionData(path, sortFunc)
 	if type(sortFunc) ~= "function" then sortFunc = WA.SortGreaterLast end
 	return function(a, b)
 		local aValue, bValue = a, b
-		for i = 1, table.getn(path) do
+		for i = 1, #path do
 			local key = path[i]
 			if type(aValue) ~= "table" then return nil end
 			if type(bValue) ~= "table" then return nil end
@@ -280,7 +280,7 @@ end
 -- comparator has no opinion about keeps the order the list arrived in.
 local function stableSort(list, cmp)
 	if not cmp then return end
-	for i = 2, table.getn(list) do
+	for i = 2, #list do
 		local item = list[i]
 		local j = i
 		while j > 1 and cmp(item, list[j - 1]) do
@@ -315,7 +315,7 @@ local baseOrder = WA.ComposeSorts(WA.SortAscending({ "dataIndex" }), WA.SortAsce
 local function activeChildren(data)
 	local list = {}
 	local kids = data.controlledChildren or {}
-	for i = 1, table.getn(kids) do
+	for i = 1, #kids do
 		local childId = kids[i]
 		local dataIndex = i
 		local cd = WeakestAurasDB.displays[childId]
@@ -500,13 +500,13 @@ end
 -- is the entry's place in the ordered list, and a run is ranked by its earliest
 -- member. Returns an array of { frame, entries }.
 local function rankRuns(runs, list)
-	local total = table.getn(list)
+	local total = #list
 	local rank = {}
 	for i = 1, total do rank[list[i]] = i end
 	local ranked = {}
 	for frame, entries in pairs(runs) do
 		local first = total + 1
-		for i = 1, table.getn(entries) do
+		for i = 1, #entries do
 			local at = rank[entries[i]]
 			if at and at < first then first = at end
 		end
@@ -514,9 +514,9 @@ local function rankRuns(runs, list)
 	end
 	stableSort(ranked, WA.SortAscending({ "first" }))
 	local claimed = {}
-	for r = 1, table.getn(ranked) do
+	for r = 1, #ranked do
 		local entries = ranked[r].entries
-		for i = table.getn(entries), 1, -1 do
+		for i = #entries, 1, -1 do
 			if claimed[entries[i]] then table.remove(entries, i)
 			else claimed[entries[i]] = true end
 		end
@@ -530,7 +530,7 @@ end
 -- does not inherit the iteration order of a hash -- the same reason
 -- activeChildren sorts before anything reads it.
 local function anchorPartitions(region, data, list)
-	local total = table.getn(list)
+	local total = #list
 	if not data.useAnchorPerUnit then return { { entries = list } } end
 
 	local buckets, order = {}, {}
@@ -624,7 +624,7 @@ local function growGrid(data, list, n)
 		c[primary.axis] = pCursor + primary.mul * pDim / 2
 		c[secondary.axis] = sCursor + secondary.mul * sDim / 2
 		if sDim > tallest then tallest = sDim end
-		if math.mod(i, perLine) == 0 then
+		if math.fmod(i, perLine) == 0 then
 			if centerRows then centerSpan(lineStart, i, primary) end
 			pCursor, lineStart = 0, i + 1
 			sCursor = sCursor + (secondary.space + tallest) * secondary.mul
@@ -691,7 +691,7 @@ end
 -- (growGrid) and the two circles ring it (growCircle). Shortens the list to the
 -- visible ones (parking the rest) and returns the box extents.
 local function growRun(data, list)
-	local total = table.getn(list)
+	local total = #list
 	local visible = total
 	if data.useLimit then
 		visible = tonumber(data.limit) or 0
@@ -710,7 +710,7 @@ local function growRun(data, list)
 
 	local space = data.space or 0
 	local grow = data.grow or "DOWN"
-	local n = table.getn(list)
+	local n = #list
 	local blx, bly, trx, try
 
 	-- Cross-axis alignment for the vertical grows (UP/DOWN/VERTICAL): line up the
@@ -847,13 +847,13 @@ end
 -- false, a grow that returns nothing, and one that threw.
 local function growCustom(region, data, list)
 	local positions = customGrowPositions(region, data, list)
-	local total = table.getn(list)
+	local total = #list
 	local placed, byFrame, runs = {}, nil, nil
 	local blx, bly, trx, try
 
-	if positions and table.getn(positions) > 0 then
+	if positions and #positions > 0 then
 		local entries, pos = {}, {}
-		for i = 1, table.getn(positions) do
+		for i = 1, #positions do
 			if type(positions[i]) == "table" then
 				local entry = list[i]
 				if entry then
@@ -887,11 +887,11 @@ local function growCustom(region, data, list)
 	end
 
 	local held = {}
-	for r = 1, table.getn(runs or {}) do
+	for r = 1, #(runs or {}) do
 		local run = runs[r]
 		local pos = byFrame[run.frame]
 		local frame = run.frame ~= "" and run.frame or nil
-		for i = 1, table.getn(run.entries) do
+		for i = 1, #run.entries do
 			local entry = run.entries[i]
 			local x, y, show = readGrowPosition(pos[entry])
 			entry.x, entry.y, entry.anchorFrame = x, y, frame
@@ -936,10 +936,10 @@ local function growChildren(region, data)
 	local placed = {}
 	local blx, bly, trx, try = 0, 0, 0, 0
 	local runs = anchorPartitions(region, data, list)
-	for r = 1, table.getn(runs) do
+	for r = 1, #runs do
 		local run = runs[r]
 		local entries, a, b, c, d = growRun(data, run.entries)
-		for i = 1, table.getn(entries) do
+		for i = 1, #entries do
 			entries[i].anchorFrame = run.frame
 			table.insert(placed, entries[i])
 		end
@@ -1064,7 +1064,7 @@ local function layoutDynamicGroup(region, data)
 	-- live offsets below are still measured against.
 	local cx, cy = (blx + trx) / 2, (bly + try) / 2
 	local wasCx, wasCy = region.xOffsetBox or 0, region.yOffsetBox or 0
-	for i = 1, table.getn(list) do
+	for i = 1, #list do
 		local c = list[i]
 		local r = c.region
 		local frame = c.anchorFrame or region
@@ -1401,7 +1401,7 @@ WA.RegisterRegionType("dynamicgroup", {
 				-- list -- because it is the shape with nothing to look up: the
 				-- frame-keyed form needs the entry tables themselves as keys.
 				default = "function(positions, activeRegions)\n"
-					.. "    for i = 1, table.getn(activeRegions) do\n"
+					.. "    for i = 1, #activeRegions do\n"
 					.. "        positions[i] = { 0, -(i - 1) * 32 }\n"
 					.. "    end\nend",
 				validate = function(txt)
@@ -1531,7 +1531,7 @@ WA.RegisterRegionType("dynamicgroup", {
 				set = function(v) data.hybridSortMode = v; WA.Add(data) end,
 			})
 			local kids = data.controlledChildren or {}
-			for i = 1, table.getn(kids) do
+			for i = 1, #kids do
 				local childId = kids[i]
 				table.insert(fields, {
 					type = "toggle", name = childId, key = "sortHybrid_" .. childId,
@@ -1615,7 +1615,7 @@ WA.RegisterRegionType("dynamicgroup", {
 					-- anchorer would find, since that is the shape most custom
 					-- anchors start from.
 					default = "function(frames, regions)\n"
-						.. "    for i = 1, table.getn(regions) do\n"
+						.. "    for i = 1, #regions do\n"
 						.. "        local state = regions[i].region.state\n"
 						.. "        local frame = state and state.unit\n"
 						.. "            and WeakestAuras.GetUnitNameplate(state.unit)\n"
@@ -1850,41 +1850,21 @@ local modelFramePool = {}
 -- Everything a paint needs lives on wa* fields of the model frame itself, so
 -- the OnShow and OnEvent handlers (globals `this`/`event`/`arg1` on this
 -- client) can re-apply without reaching back into a region or its data.
-local modelApply
-
--- One delayed re-apply after a SetCreature: an entry the client's cache has
--- purged renders nothing until the server answers the query the call fired,
--- and the answer is back well inside the delay. Once per configure, or a
--- permanently unanswerable entry would re-apply forever.
-local function modelRequery(model)
-	if model.waModelRequeried then return end
-	model.waModelRequeried = true
-	C_Timer.After(1.5, function()
-		if model.waModelCreature and model:IsShown() then modelApply(model) end
-	end)
-end
-
-modelApply = function(model)
+local function modelApply(model)
 	if model.waModelKind == "unit" then
 		pcall(model.SetUnit, model, model.waModelValue)
-		if model.waModelZoom then pcall(model.SetCamera, model, 0) end
-	elseif model.waModelKind == "path" or model.waModelKind == "creature" then
-		-- A creature entry textures the model (skins live in
-		-- CreatureDisplayInfo, which SetModel never consults); the raw path is
-		-- the fallback, drawn white.
-		if model.waModelCreature and model.SetCreature then
-			pcall(model.SetCreature, model, model.waModelCreature)
-			modelRequery(model)
-		elseif model.waModelKind == "path" then
-			pcall(model.SetModel, model, model.waModelValue)
-		else
-			pcall(model.ClearModel, model)
-			return
-		end
+	elseif model.waModelKind == "display" then
+		-- An id this client's CreatureDisplayInfo lacks leaves the model as it
+		-- was, and a pooled frame may still hold another aura's.
+		model:ClearModel()
+		model:SetDisplayInfo(model.waModelValue)
+	elseif model.waModelKind == "path" then
+		pcall(model.SetModel, model, model.waModelValue)
 	else
 		pcall(model.ClearModel, model)
 		return
 	end
+	model:SetPortraitZoom(model.waModelZoom and 1 or 0)
 	pcall(model.SetModelScale, model, model.waModelScale or 1)
 	pcall(model.SetPosition, model, model.waModelZ or 0, model.waModelX or 0, model.waModelY or 0)
 	pcall(model.SetFacing, model, math.rad(model.waModelFacing or 0))
@@ -1946,28 +1926,13 @@ local function releaseModelFrame(model)
 	table.insert(modelFramePool, model)
 end
 
--- The three forms a model aura can carry, in the order that finds a loadable
--- one: a unit (modelIsUnit reuses model_fileId for the unit token, upstream's
--- layout), a retail fileDataID resolved through WA2ModelIDs.lua, then a literal
--- path (pre-fileID exports, and auras authored here). A literal path is
--- re-spelled `\\` + `.mdx`, the form this client's SetModel provably takes.
--- modelDisplayInfo puts a *display* id in model_fileId -- a different id space
--- entirely, never a file to resolve.
-local function modelSource(data)
-	if data.modelDisplayInfo then
-		-- model_fileId holds a *display* id here -- resolvable to a creature
-		-- entry wearing it, never to a file.
-		local entry = WA.ResolveDisplayCreature(data.model_fileId)
-		if entry then return "creature", entry end
-		return nil
-	end
-	if data.modelIsUnit then
-		local unit = data.model_fileId
-		if type(unit) == "string" and unit ~= "" then return "unit", unit end
-		return nil
-	end
+-- A model file's path: a retail fileDataID resolved through WA2ModelIDs.lua,
+-- then a literal path (pre-fileID exports, and auras authored here). A literal
+-- path is re-spelled `\\` + `.mdx`, the form this client's SetModel provably
+-- takes.
+local function modelPath(data)
 	local resolved = WA.ResolveModelFile(data.model_fileId)
-	if resolved then return "path", resolved end
+	if resolved then return resolved end
 	local literal = data.model_path
 	if type(literal) ~= "string" or literal == "" then return nil end
 	literal = string.gsub(literal, "/", "\\")
@@ -1977,7 +1942,30 @@ local function modelSource(data)
 	elseif string.find(low, "%.md[xl]$") then
 		literal = string.sub(literal, 1, -5)
 	end
-	return "path", literal .. ".mdx"
+	return literal .. ".mdx"
+end
+
+-- The forms a model aura can carry, in upstream's precedence: a unit
+-- (modelIsUnit reuses model_fileId for the unit token, upstream's layout), a
+-- CreatureDisplayInfo id (modelDisplayInfo, the same reuse), then a model
+-- file. A file some display dresses renders through that display: SetModel
+-- loads geometry only, and draws a creature untextured white.
+local function modelSource(data)
+	if data.modelIsUnit then
+		local unit = data.model_fileId
+		if type(unit) == "string" and unit ~= "" then return "unit", unit end
+		return nil
+	end
+	if data.modelDisplayInfo then
+		local id = tonumber(data.model_fileId)
+		if id and id > 0 then return "display", id end
+		return nil
+	end
+	local path = modelPath(data)
+	if not path then return nil end
+	local display = WA.ResolveModelDisplay(path)
+	if display then return "display", display end
+	return "path", path
 end
 
 WA.RegisterRegionType("model", {
@@ -1991,12 +1979,11 @@ WA.RegisterRegionType("model", {
 	-- miniature.
 	thumbnailNoScroll = true,
 	defaults = {
-		-- A looping ambient effect with its own textures: creature models
-		-- fetch their skins from display info this client cannot apply, so a
-		-- creature default would greet the user with untextured white.
+		-- A looping ambient effect with its own textures.
 		model_path = "Spells\\Cyclone_State.mdx",
 		model_fileId = "",
 		modelIsUnit = false,
+		modelDisplayInfo = false,
 		portraitZoom = false,
 		advance = false,
 		sequence = 1,
@@ -2057,9 +2044,6 @@ WA.RegisterRegionType("model", {
 		if not model then return end
 		local kind, value = modelSource(data)
 		model.waModelKind, model.waModelValue = kind, value
-		model.waModelCreature = (kind == "creature" and value)
-			or (kind == "path" and WA.ResolveCreatureEntry(value)) or nil
-		model.waModelRequeried = nil
 		model.waModelZoom = data.portraitZoom and true or false
 		model.waModelScale = data.modelScale or 1
 		model.waModelX = data.model_x or 0
@@ -2072,22 +2056,28 @@ WA.RegisterRegionType("model", {
 		modelApply(model)
 	end,
 	options = function(data)
+		-- model_fileId is the unit token in unit mode, a display id in display
+		-- mode and a retail file id otherwise; a leftover from another mode
+		-- would be read in the wrong id space.
+		local function setSourceMode(isUnit, isDisplay)
+			data.modelIsUnit = isUnit
+			data.modelDisplayInfo = isDisplay
+			data.model_fileId = ""
+			WA.Add(data, true)
+			-- Repaints the tab: the field set below follows the mode.
+			WA.RefreshOptions()
+		end
 		local fields = {
 			{ type = "header", name = "Model" },
 			{
-				type = "toggle", name = "Show a unit", key = "modelIsUnit",
+				type = "toggle", name = "Show a unit", key = "modelIsUnit", half = true,
 				get = function() return data.modelIsUnit end,
-				set = function(v)
-					data.modelIsUnit = v and true or false
-					-- model_fileId is the unit token in unit mode and a retail
-					-- file id otherwise; a leftover from the other mode would
-					-- be read in the wrong id space.
-					data.model_fileId = ""
-					WA.Add(data, true)
-					-- Repaints the tab: the field set below swaps between the
-					-- unit token and the model path + browser.
-					WA.RefreshOptions()
-				end,
+				set = function(v) setSourceMode(v and true or false, false) end,
+			},
+			{
+				type = "toggle", name = "Use a display ID", key = "modelDisplayInfo", half = true,
+				get = function() return data.modelDisplayInfo end,
+				set = function(v) setSourceMode(false, v and true or false) end,
 			},
 		}
 		if data.modelIsUnit then
@@ -2096,10 +2086,11 @@ WA.RegisterRegionType("model", {
 				get = function() return data.model_fileId end,
 				set = function(v) data.model_fileId = v; WA.Add(data, true) end,
 			})
+		elseif data.modelDisplayInfo then
 			table.insert(fields, {
-				type = "toggle", name = "Portrait camera", key = "portraitZoom", half = true,
-				get = function() return data.portraitZoom end,
-				set = function(v) data.portraitZoom = v and true or false; WA.Add(data, true) end,
+				type = "input", name = "Creature display ID", key = "model_fileId",
+				get = function() return tostring(data.model_fileId or "") end,
+				set = function(v) data.model_fileId = v; WA.Add(data, true) end,
 			})
 		else
 			table.insert(fields, {
@@ -2134,12 +2125,6 @@ WA.RegisterRegionType("model", {
 				})
 			end
 		end
-		if data.modelDisplayInfo then
-			table.insert(fields, {
-				type = "description",
-				name = "This aura picks its model by creature display info, which this client cannot look up -- set a model path or unit instead.",
-			})
-		end
 		local extra = {
 			{
 				type = "range", name = "Rotation", key = "rotation", min = 0, max = 360, step = 1, half = true,
@@ -2166,6 +2151,11 @@ WA.RegisterRegionType("model", {
 		end
 		for _, f in ipairs(extra) do table.insert(fields, f) end
 		table.insert(fields, { type = "header", name = "Camera" })
+		table.insert(fields, {
+			type = "toggle", name = "Portrait camera", key = "portraitZoom",
+			get = function() return data.portraitZoom end,
+			set = function(v) data.portraitZoom = v and true or false; WA.Add(data, true) end,
+		})
 		table.insert(fields, {
 			type = "range", name = "Zoom (camera Z)", key = "model_z", min = -50, max = 50, step = 0.5, half = true,
 			get = function() return data.model_z or 0 end,
@@ -2228,9 +2218,6 @@ WA.RegisterRegionType("model", {
 			model:SetFrameLevel(region:GetFrameLevel() + 1)
 			local kind, value = modelSource(data)
 			model.waModelKind, model.waModelValue = kind, value
-			model.waModelCreature = (kind == "creature" and value)
-				or (kind == "path" and WA.ResolveCreatureEntry(value)) or nil
-			model.waModelRequeried = nil
 			model.waModelZoom = data.portraitZoom and true or false
 			model.waModelScale = data.modelScale or 1
 			model.waModelX = data.model_x or 0
@@ -2353,40 +2340,43 @@ WA.RegisterRegionType("icon", {
 	getSubRegionAnchors = function() return ICON_SUB_ANCHORS end,
 	-- List-row preview: the resolved icon (WA.ResolveDisplayIcon, Data.lua) at
 	-- the saved zoom, same texcoord rule as the runtime region's own SetZoom,
-	-- under a wedge frozen part-way so the row shows the swipe's colour and
-	-- direction. The wedge is built with the frame and never per bind: a row is
-	-- rebound to a different aura on every scroll tick and frames cannot be
-	-- destroyed here.
+	-- under a swipe held part-way so the row shows its colour and direction.
+	-- The swipe is built with the frame and never per bind: a row is rebound to
+	-- a different aura on every scroll tick and frames cannot be destroyed here.
 	createThumbnail = function(parent)
 		local frame = CreateFrame("Frame", nil, parent)
 		local tex = frame:CreateTexture(nil, "ARTWORK")
 		tex:SetAllPoints(frame)
 		frame.tex = tex
-		frame.spinner = WA.Spinner and WA.Spinner.Create(frame, "OVERLAY")
+		frame.swipe = WA.regionPrototype.CreateSwipe(frame)
 		return frame
 	end,
 	modifyThumbnail = function(frame, data)
 		frame.tex:SetTexture(WA.ResolveDisplayIcon(data) or "Interface\\Icons\\INV_Misc_QuestionMark")
 		local inset = 0.07 + (data.zoom or 0) * 0.20
 		frame.tex:SetTexCoord(inset, 1 - inset, inset, 1 - inset)
-		local spinner = frame.spinner
-		if not spinner then return end
+		local swipe = frame.swipe
+		-- A row is rebound on every list repaint, and each SetCooldown blanks the
+		-- sweep for a frame on this client (client/gotchas.md), so the hold is set
+		-- only when what it shows changes. The colour is not a SetCooldown and
+		-- re-applies freely.
 		if not data.cooldownSwipe then
-			spinner:Hide(); spinner:Reset()
+			if frame.swipeHold ~= "clear" then
+				swipe:Clear()
+				frame.swipeHold = "clear"
+			end
 			return
 		end
 		local c = data.swipeColor or { 0, 0, 0, 0.8 }
-		spinner:SetSolidColor(c[1] or 0, c[2] or 0, c[3] or 0, c[4] == nil and 0.8 or c[4])
-		spinner:SetWidth(frame:GetWidth() or 0)
-		spinner:SetHeight(frame:GetHeight() or 0)
-		-- A third of the way round: enough wedge to read as a cooldown, little
-		-- enough that the icon underneath still identifies the aura.
-		if data.inverse then
-			spinner:SetProgress(0, 126)
-		else
-			spinner:SetProgress(234, 360)
-		end
-		spinner:Show()
+		swipe:SetSwipeColor(c[1] or 0, c[2] or 0, c[3] or 0, c[4] == nil and 0.8 or c[4])
+		-- A wedge about a third of the way round: enough to read as a cooldown,
+		-- little enough that the icon underneath still identifies the aura. The
+		-- sweep covers the remaining time; reversed, the elapsed time.
+		local hold = data.inverse and "reverse" or "forward"
+		if frame.swipeHold == hold then return end
+		frame.swipeHold = hold
+		swipe:SetReverse(data.inverse and true or false)
+		CooldownFrame_SetDisplayAsPercentage(swipe, data.inverse and 0.35 or 0.65)
 	end,
 	-- The overridable-property registry conditions and their editor read
 	-- Setter names a region method defined in modify below.
@@ -2471,18 +2461,6 @@ WA.RegisterRegionType("icon", {
 				set = function(v) data.height = v; WA.Add(data, true) end,
 			},
 		}
-		-- The edge and the two colours are the spinner's to draw; the Model
-		-- fallback carries its own fixed art. Withdrawing the controls beats
-		-- leaving some that do nothing -- the keys stay on the aura either way,
-		-- so it costs an old client nothing on the trip back to a new one.
-		if not WA.regionPrototype.SwipeSupportsLooks() then
-			for i = table.getn(fields), 1, -1 do
-				local key = fields[i].key
-				if key == "cooldownEdge" or key == "swipeColor" or key == "swipeEdgeColor" then
-					table.remove(fields, i)
-				end
-			end
-		end
 		for _, f in ipairs(WA.regionPrototype.ProgressOptions(data)) do
 			table.insert(fields, f)
 		end
@@ -2491,8 +2469,8 @@ WA.RegisterRegionType("icon", {
 		end
 		return fields
 	end,
-	-- Frame + icon texture + a cooldown swipe (regionPrototype.CreateSwipe; the
-	-- radial spiral -- spinner-drawn, with a 3D Model fallback, see that helper).
+	-- Frame + icon texture + a cooldown swipe (regionPrototype.CreateSwipe, a
+	-- native Cooldown frame).
 	-- Countdown/stacks text rides on %p/%s subtext elements (SubText.lua) on top.
 	create = function(parent, data)
 		local region = CreateFrame("Frame", nil, parent)
@@ -2549,35 +2527,64 @@ WA.RegisterRegionType("icon", {
 			return (self.inverse and true or false) ~= (self.stateInverse and true or false)
 		end
 
+		-- Whether the swipe already shows (mode, a, b, reverse), recording it if
+		-- not. An unchanged cooldown must not be set again: ClassicAPI's
+		-- SetCooldown collapses the sweep's geometry and rebuilds it only on the
+		-- frame's next update, so a call landing between that update and the draw
+		-- -- any event handler or timer -- renders one frame with no swipe. Every
+		-- state update re-drives UpdateTime, so without this the swipe flickers.
+		-- Anything that has to re-arm the frame clears region.swipeMode.
+		local function swipeShows(region, mode, a, b, reverse)
+			if region.swipeMode == mode and region.swipeA == a and region.swipeB == b
+				and region.swipeReverse == reverse then
+				return true
+			end
+			region.swipeMode, region.swipeA, region.swipeB, region.swipeReverse = mode, a, b, reverse
+			return false
+		end
+
+		-- A held swipe shows `fraction` of the duration remaining. The frame's
+		-- own sweep covers the remaining time, and reverse covers the elapsed
+		-- time, which is our drain/grow pair as it is.
+		local function holdSwipe(region, fraction, reverse)
+			if swipeShows(region, "hold", fraction, nil, reverse) then return end
+			region.swipe:SetReverse(reverse)
+			CooldownFrame_SetDisplayAsPercentage(region.swipe, 1 - fraction)
+		end
+		local function clearSwipe(region)
+			if swipeShows(region, "clear") then return end
+			region.swipe:Clear()
+		end
+
 		-- UpdateProgress dispatches here after setting duration/expirationTime:
 		-- a timed state runs the swipe (when enabled), a paused one holds it at
 		-- the frozen fraction, a static one holds it at value/total. The swipe
 		-- runs for either draw flag -- an edge with the wedge switched off is
-		-- upstream's own combination, and the Model backend, which has no edge,
-		-- draws nothing for it.
+		-- upstream's own combination.
 		function region:UpdateTime()
 			local swipe = self.swipe
-			if not swipe then return end
-			if not (self.cooldownSwipe or self.cooldownEdge) then swipe:Clear(); return end
+			if not (self.cooldownSwipe or self.cooldownEdge) then clearSwipe(self); return end
 			if self.paused then
 				local fraction = 0
 				if self.duration and self.duration > 0 then
 					fraction = (self.remaining or 0) / self.duration
 				end
-				swipe:Hold(fraction, self:SwipeReverse())
+				holdSwipe(self, fraction, self:SwipeReverse())
 			elseif self.duration and self.duration > 0 then
-				swipe:Arm(self.expirationTime, self.duration, self:SwipeReverse())
+				local reverse = self:SwipeReverse()
+				if swipeShows(self, "run", self.expirationTime, self.duration, reverse) then return end
+				swipe:SetPaused(false)
+				swipe:SetReverse(reverse)
+				swipe:SetCooldownFromExpirationTime(self.expirationTime, self.duration)
 			else
-				swipe:Clear()
+				clearSwipe(self)
 			end
 		end
 		function region:UpdateValue()
-			local swipe = self.swipe
-			if not swipe then return end
 			if (self.cooldownSwipe or self.cooldownEdge) and (self.total or 0) > 0 then
-				swipe:Hold((self.value or 0) / self.total, self:SwipeReverse())
+				holdSwipe(self, (self.value or 0) / self.total, self:SwipeReverse())
 			else
-				swipe:Clear()
+				clearSwipe(self)
 			end
 		end
 
@@ -2585,33 +2592,39 @@ WA.RegisterRegionType("icon", {
 		return region
 	end,
 	modify = function(region, data)
-		-- Both dimensions feed the swipe's sizing (the spinner needs the wedge
-		-- magnitudes; the Model fallback centers a min(width,height) square),
-		-- so either setter re-runs it with the latest known value of the other.
-		function region:SetRegionWidth(w) self.regionWidth = w; self:SetWidth(w); self:UpdateInnerOuterSize(); WA.regionPrototype.SizeSwipe(self.swipe, w, self.regionHeight) end
-		function region:SetRegionHeight(h) self.regionHeight = h; self:SetHeight(h); self:UpdateInnerOuterSize(); WA.regionPrototype.SizeSwipe(self.swipe, self.regionWidth, h) end
+		function region:SetRegionWidth(w) self.regionWidth = w; self:SetWidth(w); self:UpdateInnerOuterSize() end
+		function region:SetRegionHeight(h) self.regionHeight = h; self:SetHeight(h); self:UpdateInnerOuterSize() end
 		function region:SetDesaturated(b) self.iconTex:SetDesaturated(b and true or false) end
 		function region:Color(r, g, b, a) self.iconTex:SetVertexColor(r, g, b, a or 1) end
-		-- Two draw flags on one swipe object, either of which keeps it running.
-		-- Each re-drives from the current state, since turning one on has no
-		-- frame of its own coming to place it while the other holds.
+		-- Two draw flags on one swipe, either of which keeps it running. A change
+		-- re-drives from the current state: the edge flag applies only from the
+		-- next SetCooldown, and either flag can be what starts the swipe. An
+		-- unchanged flag does nothing, since an active condition re-applies its
+		-- properties on every run, and re-arming then would blank the sweep each
+		-- time.
 		function region:SetCooldownSwipe(b)
-			self.cooldownSwipe = b and true or false
-			if self.swipe then self.swipe:SetSwipe(self.cooldownSwipe) end
+			b = b and true or false
+			if b == self.cooldownSwipe then return end
+			self.cooldownSwipe = b
+			self.swipe:SetDrawSwipe(b)
+			self.swipeMode = nil
 			if self.state then WA.regionPrototype.UpdateProgress(self) end
 		end
 		function region:SetCooldownEdge(b)
-			self.cooldownEdge = b and true or false
-			if self.swipe then self.swipe:SetEdge(self.cooldownEdge) end
+			b = b and true or false
+			if b == self.cooldownEdge then return end
+			self.cooldownEdge = b
+			self.swipe:SetDrawEdge(b)
+			self.swipeMode = nil
 			if self.state then WA.regionPrototype.UpdateProgress(self) end
 		end
 		function region:SetSwipeColor(r, g, b, a)
 			self.swipeColor = { r, g, b, a }
-			if self.swipe then self.swipe:SetSwipeColor(r, g, b, a) end
+			self.swipe:SetSwipeColor(r, g, b, a)
 		end
 		function region:SetSwipeEdgeColor(r, g, b, a)
 			self.swipeEdgeColor = { r, g, b, a }
-			if self.swipe then self.swipe:SetEdgeColor(r, g, b, a) end
+			self.swipe:SetEdgeColor(r, g, b, a)
 		end
 		function region:SetInverse(v)
 			self.inverse = v and true or false
@@ -2647,16 +2660,13 @@ WA.RegisterRegionType("icon", {
 		-- modify has not reached the state machine yet.
 		region.cooldownSwipe = data.cooldownSwipe and true or false
 		region.cooldownEdge = data.cooldownEdge and true or false
-		-- Colours before the draw flags: SetEdge builds the edge texture on
-		-- first enable and tints it from what the swipe is already holding.
 		local sc = data.swipeColor or { 0, 0, 0, 0.8 }
 		region:SetSwipeColor(sc[1], sc[2], sc[3], sc[4])
 		local ec = data.swipeEdgeColor or { 1, 0.82, 0.35, 1 }
 		region:SetSwipeEdgeColor(ec[1], ec[2], ec[3], ec[4])
-		if region.swipe then
-			region.swipe:SetSwipe(region.cooldownSwipe)
-			region.swipe:SetEdge(region.cooldownEdge)
-		end
+		region.swipe:SetDrawSwipe(region.cooldownSwipe)
+		region.swipe:SetDrawEdge(region.cooldownEdge)
+		region.swipeMode = nil
 		region.inverse = data.inverse and true or false
 		local col = data.color or { 1, 1, 1, 1 }
 		region:Color(col[1], col[2], col[3], col[4])
@@ -2906,10 +2916,9 @@ end
 -- shrinks that geometry to the fill fraction -- so handing it the configured
 -- pair would squeeze the whole start-to-end ramp into however much of the bar is
 -- filled. Upstream keeps its fg texture full-size and reveals a window onto it
--- with a mask, which is unavailable here: 1.12 has neither CreateMaskTexture
--- (ClassicAPI stubs CreateMaskTexturePool precisely because of that) nor
--- SetClipsChildren. Since the interpolation is linear, the same picture comes
--- out of interpolating the *colours* on the shrunk texture instead -- whichever
+-- with a mask. Since the interpolation is linear, the same picture comes out of
+-- interpolating the *colours* on the shrunk texture instead, with no mask --
+-- whichever
 -- end of the pair falls on the fill's leading edge is replaced by the colour the
 -- full-bar ramp would have had there. Alpha rides along with RGB.
 local function updateForegroundColor(region)
@@ -3863,9 +3872,9 @@ end
 local function displayTexts(data)
 	local texts = { data.displayText or "" }
 	local conditions = data.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		local changes = conditions[i].changes or {}
-		for c = 1, table.getn(changes) do
+		for c = 1, #changes do
 			local change = changes[c]
 			if change.property == "displayText" and type(change.value) == "string" then
 				table.insert(texts, change.value)
@@ -3919,13 +3928,9 @@ local function textAutoSize(region, data)
 	local host = fs:GetParent()
 	fs:SetParent(UIParent)
 	local w = fs:GetStringWidth() or 0
-	-- GetStringHeight is the engine's own reading and is preferred where the
-	-- client has it; GetHeight is the region's and stands in where it does not.
-	-- The two agree everywhere measured here, tall inline icons included, so
-	-- this is not a fix for a wrong number -- it is asking the question of
-	-- whoever is authoritative about it.
-	local h = 0
-	if WA.hasStringHeight then h = fs:GetStringHeight() or 0 end
+	-- GetStringHeight is the engine's own reading; GetHeight stands in when it
+	-- measures nothing.
+	local h = fs:GetStringHeight() or 0
 	if h == 0 then h = fs:GetHeight() or 0 end
 	fs:SetParent(host)
 	if w < MIN_TEXT_DIM then w = MIN_TEXT_DIM end
@@ -4161,14 +4166,10 @@ local PROGTEX_ALIGN = {
 
 -- Six wedge textures -- three per layer -- built on the first circular
 -- orientation, so a linear region never pays for textures it will not draw.
--- False without the client's corner transforms, which is what keeps
--- WA.RegionSpecFor routing a circular aura to the fallback region there.
 local function progTexSpinners(region)
 	if region.foregroundSpinner then return true end
-	if not (WA.Spinner and WA.hasTextureTransforms) then return false end
 	local bgSpinner = WA.Spinner.Create(region, "BACKGROUND")
 	local fgSpinner = WA.Spinner.Create(region, "ARTWORK")
-	if not (bgSpinner and fgSpinner) then return false end
 	region.backgroundSpinner, region.foregroundSpinner = bgSpinner, fgSpinner
 	-- The look setters run before the first circular orientation reaches the
 	-- region, so the values they cached are pushed once here; from now on each
@@ -4187,13 +4188,9 @@ end
 -- The wedge span this region's angles describe. Matches upstream's normalize:
 -- both ends into [0, 360), then lift the end above the start -- which is what
 -- turns the 0/360 default pair into a full circle rather than a zero span.
--- math.mod keeps the dividend's sign here, so the negative branch is not
--- optional.
 local function progTexAngles(region)
-	local a1 = math.mod(region.startAngle or 0, 360)
-	local a2 = math.mod(region.endAngle or 360, 360)
-	if a1 < 0 then a1 = a1 + 360 end
-	if a2 < 0 then a2 = a2 + 360 end
+	local a1 = (region.startAngle or 0) % 360
+	local a2 = (region.endAngle or 360) % 360
 	if a2 <= a1 then a2 = a2 + 360 end
 	return a1, a2
 end
@@ -4409,12 +4406,12 @@ WA.RegisterRegionType("progresstexture", {
 		if isCircular(data.orientation) then
 			-- Re-centering is linear-only, here as upstream: the spinner's own
 			-- transform has no user-offset term at all.
-			for i = table.getn(fields), 1, -1 do
+			for i = #fields, 1, -1 do
 				if fields[i].key == "user_x" or fields[i].key == "user_y" then
 					table.remove(fields, i)
 				end
 			end
-			local at = table.getn(fields) + 1
+			local at = #fields + 1
 			for i, f in ipairs(fields) do if f.key == "orientation" then at = i + 1 end end
 			table.insert(fields, at, { type = "range", name = "End angle", key = "endAngle", min = 0, max = 360, step = 1, half = true, get = function() return data.endAngle end, set = function(v) data.endAngle = v; WA.Add(data, true) end })
 			table.insert(fields, at, { type = "range", name = "Start angle", key = "startAngle", min = 0, max = 360, step = 1, half = true, get = function() return data.startAngle end, set = function(v) data.startAngle = v; WA.Add(data, true) end })
@@ -4662,13 +4659,13 @@ WA.RegisterRegionType("text", {
 		local fontFields = WA.textCore.OptionFields(data, "region:textfont",
 			function(key) return data[key] end,
 			function(key, v) data[key] = v; WA.Add(data, true) end, WA.textCore.REGION_KEYS)
-		for i = 1, table.getn(fontFields) do table.insert(fields, fontFields[i]) end
+		for i = 1, #fontFields do table.insert(fields, fontFields[i]) end
 
 		local get = textFormatGetter(data)
 		local formatFields = WA.FormatOptionFields(data.displayText, get,
 			function(key, v) data[TEXT_FORMAT_PREFIX .. key] = v; WA.Add(data, true) end,
 			data, TEXT_FORMAT_PREFIX)
-		if table.getn(formatFields) > 0 then
+		if #formatFields > 0 then
 			-- Folded for the reason subtext folds its own: every %symbol grows a
 			-- row, and with two or three symbols those rows bury the text field
 			-- being edited under settings that get chosen once.
@@ -4685,7 +4682,7 @@ WA.RegisterRegionType("text", {
 				end,
 			})
 			if not collapsed then
-				for i = 1, table.getn(formatFields) do table.insert(fields, formatFields[i]) end
+				for i = 1, #formatFields do table.insert(fields, formatFields[i]) end
 			end
 		end
 

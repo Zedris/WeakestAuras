@@ -183,11 +183,11 @@ function WA.ClearWarningPrefix(uid, prefix)
 	for key in pairs(own) do
 		if string.sub(key, 1, n) == prefix then table.insert(doomed, key) end
 	end
-	for i = 1, table.getn(doomed) do
+	for i = 1, #doomed do
 		own[doomed[i]] = nil
 		if printed[uid] then printed[uid][doomed[i]] = nil end
 	end
-	if table.getn(doomed) > 0 then pokeList() end
+	if #doomed > 0 then pokeList() end
 end
 
 function WA.MaxWarningSeverity(uid)
@@ -242,10 +242,10 @@ function WA.FormatWarnings(uid)
 	if not maxSeverity then return nil end
 
 	local body = ""
-	for i = 1, table.getn(ORDER) do
+	for i = 1, #ORDER do
 		local severity = ORDER[i]
 		local list = perSeverity[severity]
-		for j = 1, table.getn(list or {}) do
+		for j = 1, #(list or {}) do
 			if body ~= "" then body = body .. "\n\n" end
 			if mixed then body = body .. TITLES[severity] .. ": " end
 			body = body .. list[j]

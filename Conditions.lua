@@ -77,7 +77,7 @@ local function collectCustomChecks(check, entry, events, label)
 	if type(check) ~= "table" then return end
 	if check.trigger == -2 then
 		local subs = check.checks or {}
-		for i = 1, table.getn(subs) do collectCustomChecks(subs[i], entry, events, label) end
+		for i = 1, #subs do collectCustomChecks(subs[i], entry, events, label) end
 		return
 	end
 	if check.trigger ~= -1 or check.variable ~= "customcheck" then return end
@@ -86,7 +86,7 @@ local function collectCustomChecks(check, entry, events, label)
 		entry.customChecks[source] = WA.LoadFunction(source, label) or false
 	end
 	if type(check.op) == "string" then
-		for event in string.gfind(check.op, "[%w_:]+") do events[event] = true end
+		for event in string.gmatch(check.op, "[%w_:]+") do events[event] = true end
 	end
 end
 
@@ -122,7 +122,7 @@ function WA.GetProperties(data)
 	end
 	local subs = data.subRegions or {}
 	local perType = {}
-	for i = 1, table.getn(subs) do
+	for i = 1, #subs do
 		local sspec = WA.subRegionTypes[subs[i].type]
 		perType[subs[i].type] = (perType[subs[i].type] or 0) + 1
 		if sspec and sspec.properties then
@@ -153,7 +153,7 @@ function WA.GetConditionTemplates(data)
 	local out = {}
 	-- A group carries no triggers at all (MergeDefaults clears them), and its
 	-- options window still reaches here for the conditions tab.
-	for triggernum = 1, table.getn(data.triggers or {}) do
+	for triggernum = 1, #(data.triggers or {}) do
 		local system = WA.GetTriggerSystem(data, triggernum)
 		local base = system and system.GetTriggerConditions
 			and system.GetTriggerConditions(data, triggernum) or {}
@@ -261,7 +261,7 @@ local function evalCheck(check, states, entry, now, region)
 		local isOr = check.variable == "OR"
 		local res = not isOr -- AND starts true, OR starts false
 		local nextFlip
-		for i = 1, table.getn(subs) do
+		for i = 1, #subs do
 			local r, f = evalCheck(subs[i], states, entry, now, region)
 			if isOr then if r then res = true end
 			else if not r then res = false end end
@@ -345,7 +345,7 @@ runFor = function(region, uid, hideRegion)
 	if not entry then return end
 	local data = entry.data
 	local conditions = data.conditions or {}
-	local nConds = table.getn(conditions)
+	local nConds = #conditions
 	local cloneId = region.cloneId or ""
 	local now = GetTime()
 
@@ -381,7 +381,7 @@ runFor = function(region, uid, hideRegion)
 	for i = 1, nConds do
 		if prev[i] and not newActive[i] then
 			local changes = conditions[i].changes or {}
-			for c = 1, table.getn(changes) do
+			for c = 1, #changes do
 				local prop = changes[c].property
 				local pentry = prop and entry.properties[prop]
 				if pentry and not pentry.action then
@@ -399,7 +399,7 @@ runFor = function(region, uid, hideRegion)
 	for i = 1, nConds do
 		if newActive[i] then
 			local changes = conditions[i].changes or {}
-			for c = 1, table.getn(changes) do
+			for c = 1, #changes do
 				local prop = changes[c].property
 				local pentry = prop and entry.properties[prop]
 				if pentry and pentry.action then
@@ -466,7 +466,7 @@ function WA.LoadConditions(data)
 	compiled[uid] = entry
 	local events = {}
 	local conditions = data.conditions or {}
-	for i = 1, table.getn(conditions) do
+	for i = 1, #conditions do
 		collectCustomChecks(conditions[i].check, entry, events,
 			tostring(data.id) .. ": condition " .. i .. " custom check")
 	end
@@ -510,7 +510,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local globalFrame = CreateFrame("Frame")
-for i = 1, table.getn(GLOBAL_EVENTS) do globalFrame:RegisterEvent(GLOBAL_EVENTS[i]) end
+for i = 1, #GLOBAL_EVENTS do globalFrame:RegisterEvent(GLOBAL_EVENTS[i]) end
 globalFrame:SetScript("OnEvent", function()
 	if not WA.ForEachRegion then return end
 	WA.ForEachRegion(function(region, id)
